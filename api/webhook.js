@@ -33,24 +33,29 @@ export default async function handler(req, res) {
 
       const cleanText = messageText.trim().toUpperCase();
 
-      // FILTRO ESTRICTO: Solo procesar si el mensaje es exactamente M, S, I o P
+      // 🔴 FILTRO DE OMISIÓN ESTRICTO: 
+      // Si el texto NO es M, S, I o P, se descarta y omite al instante.
       if (!['M', 'S', 'I', 'P'].includes(cleanText)) {
-        return res.status(200).json({ status: 'Ignored: Not a target command' });
+        return res.status(200).json({ status: 'Omitted' });
       }
 
-      // Extraer el teléfono eliminando sufijos de dispositivos de WhatsApp (ej. :2)
+      // ==========================================
+      // DE AQUÍ EN ADELANTE SOLO SE EJECUTA CON M, S, I, P
+      // ==========================================
+
+      // Extraer el teléfono del emisor limpiando sufijos de dispositivos (ej. :2)
       const participant = messageData?.key?.participant || messageData?.participant || remoteJid || '';
-      const baseParticipant = participant.split(':')[0]; // Remueve el :2 o sufijos técnicos
+      const baseParticipant = participant.split(':')[0];
       let rawPhone = baseParticipant.split('@')[0].replace(/[^0-9]/g, '');
 
       let senderPhone = rawPhone;
       if (senderPhone.length === 8) {
         senderPhone = '+506' + senderPhone;
-      } else if (!senderPhone.length > 8 && !senderPhone.startsWith('+')) {
+      } else if (!senderPhone.startsWith('+')) {
         senderPhone = '+' + senderPhone;
       }
 
-      console.log(`🎯 Comando "${cleanText}" detectado de el teléfono limpio: ${senderPhone}`);
+      console.log(`🎯 Comando válido detectado: "${cleanText}" de el teléfono: ${senderPhone}`);
 
       // Consultar el residente en Supabase por su teléfono
       const { data: residente, error } = await supabase
@@ -60,7 +65,7 @@ export default async function handler(req, res) {
         .single();
 
       if (error || !residente) {
-        console.error(`❌ Residente no encontrado en Supabase para el teléfono: "${senderPhone}". Revisa si está registrado así en la BD.`);
+        console.error(`❌ Residente no registrado en Supabase para el teléfono: ${senderPhone}`);
         return res.status(200).json({ status: 'Residente no registrado' });
       }
 
