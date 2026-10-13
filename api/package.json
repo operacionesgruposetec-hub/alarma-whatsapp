@@ -1,9 +1,8 @@
 {
   "name": "alarma-whatsapp",
   "version": "1.0.0",
-  "description": "Sistema de alertas de emergencia por WhatsApp",
-  "main": "api/webhook.js",
+  "type": "module",
   "dependencies": {
-    "@supabase/supabase-js": "^2.39.0"
+    "@supabase/supabase-js": "^2.x.x"
   }
 }
