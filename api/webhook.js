@@ -9,14 +9,15 @@ const evolutionKey = process.env.EVOLUTION_API_KEY;
 const evolutionInstance = process.env.EVOLUTION_INSTANCE;
 
 export default async function handler(req, res) {
+  // Asegurar que responda correctamente a las peticiones POST de Evolution API
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Método no permitido' });
   }
 
   try {
     const body = req.body;
-    console.log("Evento recibido de Evolution:", JSON.stringify(body));
 
+    // Aceptar tanto 'MESSAGES-UPSERT' como 'messages.upsert' por seguridad
     if (body.event === 'MESSAGES-UPSERT' || body.event === 'messages.upsert') {
       const messageData = body.data;
       
@@ -41,23 +42,23 @@ export default async function handler(req, res) {
       if (validCommands.includes(cleanCommand)) {
         console.log(`Comando [${cleanCommand}] recibido de ${senderPhone} en el grupo ${remoteJid}`);
 
-        // Consultar residente en Supabase de forma segura (sin .single para evitar crash)
-        const { data: residentes, error } = await supabase
+        // Consultar residente en Supabase usando .maybeSingle() para evitar que falle si no existe
+        const { data: residente, error } = await supabase
           .from('residentes')
           .select('*')
-          .eq('telefono', senderPhone);
+          .eq('telefono', senderPhone)
+          .maybeSingle();
 
         if (error) {
-          console.error("Error consultando Supabase:", error);
-          return res.status(200).json({ status: 'Supabase error', error: error.message });
+          console.error("Error en Supabase:", error);
+          return res.status(200).json({ status: 'Database error' });
         }
 
-        if (!residentes || residentes.length === 0) {
-          console.log(`Teléfono no encontrado en Supabase: ${senderPhone}`);
-          return res.status(200).json({ status: 'Unauthorized sender', phone: senderPhone });
+        if (!residente) {
+          console.log(`Teléfono no autorizado: ${senderPhone}`);
+          return res.status(200).json({ status: 'Unauthorized sender' });
         }
 
-        const residente = residentes[0];
         const nombreResidente = residente.nombre || 'Residente';
         const casaResidente = residente.casa_lote || 'No especificada';
 
@@ -69,8 +70,8 @@ export default async function handler(req, res) {
 
         const respuestaTexto = `🚨 *ALERTA ACTIVADA* 🚨\n\n*Tipo:* ${tipoAlerta}\n*Reportado por:* ${nombreResidente}\n*Casa/Lote:* ${casaResidente}\n\n_El sistema ha registrado su aviso._`;
 
-        // Enviar respuesta al grupo
-        const evoResponse = await fetch(`${evolutionUrl}/message/sendText/${evolutionInstance}`, {
+        // Enviar respuesta de vuelta al grupo mediante Evolution API
+        await fetch(`${evolutionUrl}/message/sendText/${evolutionInstance}`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -81,9 +82,6 @@ export default async function handler(req, res) {
             text: respuestaTexto
           })
         });
-
-        const evoResult = await evoResponse.json();
-        console.log("Respuesta de Evolution API al enviar:", evoResult);
 
         return res.status(200).json({ 
           status: 'Success', 
@@ -97,6 +95,6 @@ export default async function handler(req, res) {
 
   } catch (err) {
     console.error('Error crítico en el webhook:', err);
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
