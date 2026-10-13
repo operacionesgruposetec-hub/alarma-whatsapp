@@ -27,23 +27,27 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Ignored: Not a group message' });
       }
 
-      // Extraer el texto del mensaje
+      // Extraer el texto del mensaje de forma segura
       const messageText = messageData?.message?.conversation || 
                           messageData?.message?.extendedTextMessage?.text || '';
 
-      const participantJid = messageData?.key?.participant || messageData?.participant || '';
-      let senderPhone = participantJid.split('@')[0];
+      // Obtener el número de teléfono del emisor de manera limpia
+      const participantJid = messageData?.key?.participant || messageData?.participant || messageData?.key?.remoteJid || '';
+      let rawPhone = participantJid.split('@')[0];
+      
+      // Limpiar caracteres extra si los trae (ej. de grupos de WhatsApp)
+      rawPhone = rawPhone.replace(/[^0-9]/g, '');
 
-      if (!senderPhone.startsWith('+')) {
-        senderPhone = '+' + senderPhone;
-      }
+      // Construir formato con + (Ej: +50660301041). Ajusta los últimos dígitos según tu país si es necesario, 
+      // o probemos buscando directamente por coincidencia parcial si el número completo varía.
+      const senderPhone = '+' + rawPhone;
 
-      console.log(`Mensaje recibido de ${senderPhone}: "${messageText}"`);
+      console.log(`Texto extraído: "${messageText}" | Teléfono procesado para buscar: ${senderPhone}`);
 
-      // Si el mensaje es la letra 'M' o 'S' para activar la alerta
+      // Activación al recibir 'M' o 'S'
       if (messageText.trim().toUpperCase() === 'M' || messageText.trim().toUpperCase() === 'S') {
         
-        // Consultar el residente en Supabase por su teléfono
+        // Consultar el residente en Supabase
         const { data: residente, error } = await supabase
           .from('residentes')
           .select('*, residenciales(*)')
@@ -51,16 +55,17 @@ export default async function handler(req, res) {
           .single();
 
         if (error || !residente) {
-          console.log('Residente no encontrado en la base de datos para el teléfono:', senderPhone);
+          console.error('Error o residente no encontrado en Supabase para:', senderPhone, error);
           return res.status(200).json({ status: 'Residente no registrado' });
         }
 
-        const nombreResidente = residente.nombre || 'Desconocido';
-        const domicilio = residente.domicilio || residente.residencial_id || 'No especificado';
+        console.log('Residente encontrado:', residente.nombre);
 
-        // 1. ENVIAR LA IMAGEN DE EMERGENCIA (Puedes cambiar la URL por la imagen que desees mostrar)
-        const imagenUrl = "https://images.unsplash.com/photo-1541872703-74c5e44368f9?q=80&w=1000&auto=format&fit=crop"; // URL de ejemplo o la foto de tu sistema
-        
+        const nombreResidente = residente.nombre || 'Desconocido';
+        const domicilio = residente.domicilio || 'No especificado';
+
+        // 1. ENVIAR IMAGEN
+        const imagenUrl = "https://images.unsplash.com/photo-1541872703-74c5e44368f9?q=80&w=1000&auto=format&fit=crop";
         await axios.post(
           `${evolutionUrl}/message/sendMedia/${evolutionInstance}`,
           {
@@ -71,15 +76,10 @@ export default async function handler(req, res) {
               caption: "🔴 ALERTA DE ALARMA VECINAL 🔴"
             }
           },
-          {
-            headers: {
-              apikey: evolutionKey,
-              'Content-Type': 'application/json'
-            }
-          }
+          { headers: { apikey: evolutionKey, 'Content-Type': 'application/json' } }
         );
 
-        // 2. ENVIAR EL TEXTO CON LOS DATOS DEL RESIDENTE
+        // 2. ENVIAR TEXTO
         const respuestaTexto = `👤 SR/SRA: ${nombreResidente}\n` +
           `🏠 DOMICILIO: ${domicilio}\n` +
           `📅 FECHA Y HORA: ${new Date().toLocaleString()}\n\n` +
@@ -91,43 +91,30 @@ export default async function handler(req, res) {
             number: remoteJid,
             text: respuestaTexto
           },
-          {
-            headers: {
-              apikey: evolutionKey,
-              'Content-Type': 'application/json'
-            }
-          }
+          { headers: { apikey: evolutionKey, 'Content-Type': 'application/json' } }
         );
 
-        // 3. ENVIAR LA UBICACIÓN / COORDENADAS (Ejemplo con coordenadas de referencia, ajústalas si las guardas en Supabase)
-        const latitud = residente.latitud || 9.856; // Si las guardas en Supabase, puedes usar residente.latitud
-        const longitud = residente.longitud || -83.914; // Si las guardas en Supabase, puedes usar residente.longitud
-
+        // 3. ENVIAR UBICACIÓN
         await axios.post(
           `${evolutionUrl}/message/sendLocation/${evolutionInstance}`,
           {
             number: remoteJid,
             name: `Ubicación de Emergencia - ${nombreResidente}`,
             address: domicilio,
-            latitude: latitud,
-            longitude: longitud
+            latitude: residente.latitud || 9.856,
+            longitude: residente.longitud || -83.914
           },
-          {
-            headers: {
-              apikey: evolutionKey,
-              'Content-Type': 'application/json'
-            }
-          }
+          { headers: { apikey: evolutionKey, 'Content-Type': 'application/json' } }
         );
 
-        console.log('Alerta completa (Imagen, Texto y Ubicación) enviada exitosamente.');
+        console.log('¡Secuencia de alerta enviada con éxito!');
       }
     }
 
     return res.status(200).json({ status: 'Webhook procesado correctamente' });
 
   } catch (error) {
-    console.error('Error al procesar el webhook:', error);
+    console.error('Error general en el webhook:', error);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
 }
