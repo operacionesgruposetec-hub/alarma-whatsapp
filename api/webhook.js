@@ -9,6 +9,7 @@ const evolutionKey = process.env.EVOLUTION_API_KEY;
 const evolutionInstance = process.env.EVOLUTION_INSTANCE;
 
 export default async function handler(req, res) {
+  // Asegurar que responda correctamente a las peticiones POST de Evolution API
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Método no permitido' });
   }
@@ -16,6 +17,7 @@ export default async function handler(req, res) {
   try {
     const body = req.body;
 
+    // Aceptar tanto 'MESSAGES-UPSERT' como 'messages.upsert' por seguridad
     if (body.event === 'MESSAGES-UPSERT' || body.event === 'messages.upsert') {
       const messageData = body.data;
       
@@ -40,14 +42,19 @@ export default async function handler(req, res) {
       if (validCommands.includes(cleanCommand)) {
         console.log(`Comando [${cleanCommand}] recibido de ${senderPhone} en el grupo ${remoteJid}`);
 
-        // 1. Consultar residente en Supabase
+        // Consultar residente en Supabase usando .maybeSingle() para evitar que falle si no existe
         const { data: residente, error } = await supabase
           .from('residentes')
-          .select('*, residenciales(*)')
+          .select('*')
           .eq('telefono', senderPhone)
-          .single();
+          .maybeSingle();
 
-        if (error || !residente) {
+        if (error) {
+          console.error("Error en Supabase:", error);
+          return res.status(200).json({ status: 'Database error' });
+        }
+
+        if (!residente) {
           console.log(`Teléfono no autorizado: ${senderPhone}`);
           return res.status(200).json({ status: 'Unauthorized sender' });
         }
@@ -63,7 +70,7 @@ export default async function handler(req, res) {
 
         const respuestaTexto = `🚨 *ALERTA ACTIVADA* 🚨\n\n*Tipo:* ${tipoAlerta}\n*Reportado por:* ${nombreResidente}\n*Casa/Lote:* ${casaResidente}\n\n_El sistema ha registrado su aviso._`;
 
-        // 2. Enviar respuesta de vuelta al grupo mediante Evolution API
+        // Enviar respuesta de vuelta al grupo mediante Evolution API
         await fetch(`${evolutionUrl}/message/sendText/${evolutionInstance}`, {
           method: 'POST',
           headers: {
@@ -87,7 +94,7 @@ export default async function handler(req, res) {
     return res.status(200).json({ status: 'Event received, no action needed' });
 
   } catch (err) {
-    console.error('Error en el webhook:', err);
+    console.error('Error crítico en el webhook:', err);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
