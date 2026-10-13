@@ -16,6 +16,9 @@ export default async function handler(req, res) {
   try {
     const body = req.body;
 
+    // Imprimir el evento completo en los logs para depurar
+    console.log("BODY RECIBIDO:", JSON.stringify(body, null, 2));
+
     if (body.event === 'MESSAGES_UPSERT' || body.event === 'messages.upsert') {
       const messageData = body.data;
 
@@ -26,20 +29,17 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Ignored: Not a group message' });
       }
 
-      // Extraer el texto del mensaje de forma segura
+      // Buscar el texto en todas las ubicaciones posibles de Evolution API
       const messageText = messageData?.message?.conversation || 
                           messageData?.message?.extendedTextMessage?.text || 
-                          messageData?.body || '';
+                          messageData?.body || 
+                          messageData?.message?.imageMessage?.caption || '';
 
       const cleanText = messageText.trim().toUpperCase();
 
-      // Extraer el número de teléfono del emisor de forma limpia
-      const participant = messageData?.key?.participant || messageData?.participant || '';
-      let rawPhone = participant.split('@')[0];
-      if (!rawPhone) {
-        rawPhone = remoteJid.split('@')[0];
-      }
-      rawPhone = rawPhone.replace(/[^0-9]/g, '');
+      // Extraer teléfono
+      const participant = messageData?.key?.participant || messageData?.participant || remoteJid || '';
+      let rawPhone = participant.split('@')[0].replace(/[^0-9]/g, '');
 
       let senderPhone = rawPhone;
       if (senderPhone.length === 8) {
@@ -48,14 +48,12 @@ export default async function handler(req, res) {
         senderPhone = '+' + senderPhone;
       }
 
-      // Imprimir en los logs para depuración en vivo
-      console.log(`[LOG] Texto detectado: "${cleanText}" | Teléfono del emisor: ${senderPhone}`);
+      console.log(`➡️ TEXTO CAPTURADO: "${cleanText}" | TELÉFONO: ${senderPhone}`);
 
-      // FILTRO ESTRICTO: Solo procesar si el mensaje es exactamente M, S, I o P
-      if (cleanText === 'M' || cleanText === 'S' || cleanText === 'I' || cleanText === 'P') {
-        console.log(`¡Comando de emergencia '${cleanText}' reconocido! Consultando Supabase...`);
+      // Validar si es M, S, I o P
+      if (['M', 'S', 'I', 'P'].includes(cleanText)) {
+        console.log(`🎯 ¡Comando válido (${cleanText}) detectado! Buscando en Supabase...`);
 
-        // Consultar el residente en Supabase por su teléfono
         const { data: residente, error } = await supabase
           .from('residentes')
           .select('*, residenciales(*)')
@@ -63,11 +61,11 @@ export default async function handler(req, res) {
           .single();
 
         if (error || !residente) {
-          console.error('❌ Residente no encontrado en Supabase para el teléfono:', senderPhone, error);
-          return res.status(200).json({ status: 'Residente no registrado en BD' });
+          console.error('❌ No se encontró el residente para el teléfono:', senderPhone);
+          return res.status(200).json({ status: 'Residente no registrado' });
         }
 
-        console.log('✅ ¡Residente encontrado en Supabase!', residente.nombre);
+        console.log('✅ Residente encontrado:', residente.nombre);
 
         const nombreResidente = residente.nombre || 'Desconocido';
         const domicilio = residente.domicilio || residente.residencial_id || 'No especificado';
@@ -120,14 +118,14 @@ export default async function handler(req, res) {
           })
         });
 
-        console.log('🚀 ¡Secuencia de alerta completa enviada con éxito!');
+        console.log('🚀 ¡Alerta enviada correctamente!');
       }
     }
 
     return res.status(200).json({ status: 'Webhook procesado correctamente' });
 
   } catch (error) {
-    console.error('Error general en el webhook:', error);
+    console.error('Error crítico en el webhook:', error);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
 }
