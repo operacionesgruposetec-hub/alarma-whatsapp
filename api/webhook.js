@@ -26,22 +26,31 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Ignored: Not a group message' });
       }
 
-      // Extraer el texto del mensaje de forma segura
+      // Extraer el texto de todas las formas posibles que envía Evolution API
       const messageText = messageData?.message?.conversation || 
-                          messageData?.message?.extendedTextMessage?.text || '';
+                          messageData?.message?.extendedTextMessage?.text || 
+                          messageData?.body || 
+                          messageData?.message?.imageMessage?.caption || '';
 
-      // Obtener el número de teléfono del emisor
-      const participantJid = messageData?.key?.participant || messageData?.participant || messageData?.key?.remoteJid || '';
+      // Obtener el número de teléfono real del emisor (priorizando el participante del grupo)
+      const participantJid = messageData?.key?.participant || messageData?.participant || '';
       let rawPhone = participantJid.split('@')[0];
+      
+      // Si el participante viene vacío, intentamos sacarlo de remoteJid o pushName
+      if (!rawPhone) {
+        rawPhone = messageData?.key?.remoteJid?.split('@')[0] || '';
+      }
+
       rawPhone = rawPhone.replace(/[^0-9]/g, '');
       const senderPhone = '+' + rawPhone;
 
-      console.log(`Texto extraído: "${messageText}" | Teléfono procesado: ${senderPhone}`);
+      console.log(`Texto extraído con éxito: "${messageText}" | Teléfono emisor: ${senderPhone}`);
 
-      // Activación al recibir 'M' o 'S'
-      if (messageText.trim().toUpperCase() === 'M' || messageText.trim().toUpperCase() === 'S') {
+      // Activación al recibir 'M' o 'S' (haciendo la validación flexible)
+      const cleanText = messageText.trim().toUpperCase();
+      if (cleanText === 'M' || cleanText === 'S' || cleanText.includes('M') || cleanText.includes('S')) {
         
-        // Consultar el residente en Supabase
+        // Consultar el residente en Supabase por su teléfono
         const { data: residente, error } = await supabase
           .from('residentes')
           .select('*, residenciales(*)')
@@ -49,16 +58,15 @@ export default async function handler(req, res) {
           .single();
 
         if (error || !residente) {
-          console.error('Residente no encontrado en Supabase para:', senderPhone, error);
-          return res.status(200).json({ status: 'Residente no registrado' });
+          console.error('Residente no encontrado en Supabase para el teléfono:', senderPhone, error);
+          return res.status(200).json({ status: 'Residente no registrado en BD' });
         }
 
-        console.log('Residente encontrado:', residente.nombre);
+        console.log('¡Residente encontrado!', residente.nombre);
 
         const nombreResidente = residente.nombre || 'Desconocido';
-        const domicilio = residente.domicilio || 'No especificado';
+        const domicilio = residente.domicilio || residente.residencial_id || 'No especificado';
 
-        // Headers comunes para Evolution API
         const headers = {
           'apikey': evolutionKey,
           'Content-Type': 'application/json'
