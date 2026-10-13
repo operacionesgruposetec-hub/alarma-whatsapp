@@ -33,18 +33,19 @@ export default async function handler(req, res) {
 
       const cleanText = messageText.trim().toUpperCase();
 
-      // 🔴 FILTRO DE OMISIÓN ESTRICTO: 
-      // Si el texto NO es M, S, I o P, se descarta y omite al instante.
+      // FILTRO DE OMISIÓN ESTRICTO: Si no es M, S, I o P, se omite al instante.
       if (!['M', 'S', 'I', 'P'].includes(cleanText)) {
         return res.status(200).json({ status: 'Omitted' });
       }
 
-      // ==========================================
-      // DE AQUÍ EN ADELANTE SOLO SE EJECUTA CON M, S, I, P
-      // ==========================================
+      // EXTRAER EL TELÉFONO EXCLUSIVAMENTE DEL PARTICIPANTE (NUNCA DEL GRUPO)
+      const participant = messageData?.key?.participant || messageData?.participant || messageData?.author || '';
+      
+      if (!participant) {
+        console.log('⚠️ Mensaje de grupo sin participante explícito (posible mensaje del propio bot). Ignorando.');
+        return res.status(200).json({ status: 'Ignored: No participant' });
+      }
 
-      // Extraer el teléfono del emisor limpiando sufijos de dispositivos (ej. :2)
-      const participant = messageData?.key?.participant || messageData?.participant || remoteJid || '';
       const baseParticipant = participant.split(':')[0];
       let rawPhone = baseParticipant.split('@')[0].replace(/[^0-9]/g, '');
 
@@ -55,7 +56,7 @@ export default async function handler(req, res) {
         senderPhone = '+' + senderPhone;
       }
 
-      console.log(`🎯 Comando válido detectado: "${cleanText}" de el teléfono: ${senderPhone}`);
+      console.log(`🎯 Comando válido "${cleanText}" detectado de el número personal: ${senderPhone}`);
 
       // Consultar el residente en Supabase por su teléfono
       const { data: residente, error } = await supabase
