@@ -1,65 +1,90 @@
-// api/webhook.js
+import { createClient } from '@supabase/supabase-js';
+
+// Inicializar cliente de Supabase usando tus variables de entorno
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_ANON_KEY;
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 export default async function handler(req, res) {
-  // 1. Asegurar que sea una petición POST (que es como manda los webhooks la Evolution API)
+  // Solo aceptamos peticiones POST desde Evolution API
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Método no permitido. Solo POST.' });
+    return res.status(405.json({ error: 'Método no permitido' }));
   }
 
   try {
     const body = req.body;
 
-    // Extraer datos del mensaje entrante de la Evolution API
-    const messageData = body?.data?.message || body?.message;
-    const senderJid = body?.data?.key?.remoteJid || body?.key?.remoteJid;
-    const isFromMe = body?.data?.key?.fromMe || false;
+    // Verificamos que sea un evento de mensaje entrante (MESSAGES_UPSERT)
+    if (body.event === 'MESSAGES-UPSERT' || body.event === 'messages.upsert') {
+      const messageData = body.data;
+      
+      // Extraer información clave del mensaje
+      const remoteJid = messageData?.key?.remoteJid; // Identifica si es un grupo (termina en @g.us) o chat individual
+      const isGroup = remoteJid && remoteJid.endsWith('@g.us');
+      
+      // Si no es un grupo, ignoramos el mensaje (según la regla de seguridad comunitaria)
+      if (!isGroup) {
+        return res.status(200).json({ status: 'Ignored: Not a group message' });
+      }
 
-    // Si no hay mensaje o el mensaje fue enviado por el propio bot/sistema, ignorar
-    if (!messageData || isFromMe) {
-      return res.status(200).json({ status: 'ignored_self_or_empty' });
+      // Obtener el número de teléfono del remitente real dentro del grupo
+      // En Evolution API, el participante a menudo viene en messageData.key.participant o messageData.participant
+      const participantJid = messageData?.key?.participant || messageData?.participant || '';
+      const senderPhone = participantJid.split('@')[0]; // Limpiamos para dejar solo los números
+
+      // Extraer el texto del mensaje (puede venir en diferentes estructuras según la versión de Evolution)
+      const messageContent = 
+        messageData?.message?.conversation ||
+        messageData?.message?.extendedTextMessage?.text ||
+        '';
+
+      const cleanCommand = messageContent.trim().toUpperCase();
+
+      // Validar si el texto es exactamente uno de nuestros comandos de emergencia: M, S, I, P
+      const validCommands = ['M', 'S', 'I', 'P'];
+      if (validCommands.includes(cleanCommand)) {
+        console.log(`Comando válido [${cleanCommand}] recibido del número ${senderPhone} en el grupo ${remoteJid}`);
+
+        // Consultar Supabase para identificar al residente por su número de teléfono
+        const { data: residente, error } = await supabase
+          .from('residentes')
+          .select('*, residenciales(*)')
+          .eq('telefono', senderPhone)
+          .single();
+
+        if (error || !residente) {
+          console.log(`Número no registrado en Supabase: ${senderPhone}`);
+          // Opcional: Enviar mensaje al grupo indicando que el número no está autorizado
+          return res.status(200).json({ status: 'Unauthorized sender' });
+        }
+
+        // Si el residente existe, armamos la respuesta con su información
+        const nombreResidente = residente.nombre || 'Residente';
+        const casaResidente = residente.casa_lote || 'No especificada';
+        
+        let tipoAlerta = '';
+        if (cleanCommand === 'M') tipoAlerta = 'Médica 🚑';
+        if (cleanCommand === 'S') tipoAlerta = 'Seguridad / Asalto 🚨';
+        if (cleanCommand === 'I') tipoAlerta = 'Incendio 🔥';
+        if (cleanCommand === 'P') tipoAlerta = 'Pánico / General ⚠️';
+
+        const respuestaTexto = `🚨 *ALERTA ACTIVADA* 🚨\n\n*Tipo:* ${tipoAlerta}\n*Reportado por:* ${nombreResidente}\n*Casa/Lote:* ${casaResidente}\n\n_El sistema ha registrado su aviso._`;
+
+        // Aquí más adelante integraremos el envío de mensaje de vuelta a través de Evolution API y la activación de Tuya
+        
+        return res.status(200).json({ 
+          status: 'Success', 
+          command: cleanCommand, 
+          residente: nombreResidente,
+          group: remoteJid 
+        });
+      }
     }
 
-    // Extraer el texto del mensaje (soporta texto plano o mensajes extendidos)
-    const rawText = messageData?.conversation || messageData?.extendedTextMessage?.text || '';
-    
-    // FILTRO ANTI-FALLOS: 
-    // Limpiamos espacios y convertimos a mayúsculas. 
-    // Exigimos que el mensaje sea EXACTAMENTE un solo caracter (M, S, I o P).
-    const cleanText = rawText.trim().toUpperCase();
-    const VALID_COMMANDS = ['M', 'S', 'I', 'P'];
+    return res.status(200).json({ status: 'Event received, no action needed' });
 
-    if (!VALID_COMMANDS.includes(cleanText)) {
-      // Si el usuario escribió una frase ("Hola", "Mamá", "Buenos días"), 
-      // el sistema la ignora por completo para evitar falsas alarmas.
-      return res.status(200).json({ status: 'ignored_not_a_strict_command' });
-    }
-
-    // Mapa oficial de las alertas residenciales
-    const ALERT_TYPES = {
-      M: { code: 'M', name: 'Emergencia Médica', icon: '🚨' },
-      S: { code: 'S', name: 'Sospecha', icon: '👁️' },
-      I: { code: 'I', name: 'Incendio', icon: '🔥' },
-      P: { code: 'P', name: 'Pánico', icon: '⚠️' }
-    };
-
-    const currentAlert = ALERT_TYPES[cleanText];
-
-    console.log(`[ALERTA RECIBIDA] Tipo: ${currentAlert.name} (${currentAlert.code}) de: ${senderJid}`);
-
-    // Próximos pasos a integrar aquí mismo en Vercel:
-    // 1. Consultar Supabase usando el número (senderJid) para obtener la casa, el nombre, foto y coordenadas.
-    // 2. Enviar la orden a la API de Tuya Smart para activar el socket/sirena correspondiente.
-    // 3. Responder al residente por WhatsApp mediante la Evolution API.
-
-    return res.status(200).json({
-      success: true,
-      message: `Comando ${currentAlert.code} procesado correctamente`,
-      alert: currentAlert.name,
-      sender: senderJid
-    });
-
-  } catch (error) {
-    console.error('Error procesando el webhook en Vercel:', error);
-    return res.status(500).json({ error: 'Error interno en el servidor' });
+  } catch (err) {
+    console.error('Error procesando el webhook:', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
