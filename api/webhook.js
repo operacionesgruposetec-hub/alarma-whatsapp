@@ -26,44 +26,32 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Ignored: Not a group message' });
       }
 
-      // Extraer texto
+      // Extraer el texto del mensaje
       const messageText = messageData?.message?.conversation || 
                           messageData?.message?.extendedTextMessage?.text || 
                           messageData?.body || '';
 
       const cleanText = messageText.trim().toUpperCase();
 
+      // FILTRO ESTRICTO: Solo M, S, I o P
       if (!['M', 'S', 'I', 'P'].includes(cleanText)) {
         return res.status(200).json({ status: 'Omitted' });
       }
 
-      // 🔍 IMPRIMIR TODAS LAS POSIBLES FUENTES DE PARTICIPANTE PARA DIAGNÓSTICO
-      console.log('--- DEBUG PARTICIPANTE ---');
-      console.log('key.participant:', messageData?.key?.participant);
-      console.log('participant direct:', messageData?.participant);
-      console.log('author:', messageData?.author);
-      console.log('remoteJid (Grupo):', remoteJid);
-      console.log('--------------------------');
+      // Obtener el participante crudo (incluso si viene con @lid)
+      const participant = messageData?.key?.participant || messageData?.participant || messageData?.author || '';
+      const rawDigits = participant.replace(/[^0-9]/g, '');
 
-      // Extraer el teléfono probando diferentes campos si el principal falla
-      let rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.author || '';
-      
-      // Si el participante viene con formato largo, limpiamos pero conservamos los dígitos clave
-      const baseParticipant = rawParticipant.split(':')[0];
-      let rawPhone = baseParticipant.split('@')[0].replace(/[^0-9]/g, '');
-
-      // Si por alguna razón extrajo el ID del grupo o quedó muy largo, veamos cómo ajustarlo
-      let senderPhone = rawPhone;
-      if (senderPhone.length > 11) {
-        // Si trae el código de país repetido o prefijo de WhatsApp, tomamos los últimos 8 o 11 dígitos según tu país (Costa Rica = 506 + 8 dígitos)
-        senderPhone = '+' + senderPhone.slice(-11); 
-      } else if (senderPhone.length === 8) {
-        senderPhone = '+506' + senderPhone;
-      } else if (!senderPhone.startsWith('+')) {
-        senderPhone = '+' + senderPhone;
+      // Tomamos los últimos 8 dígitos del número (el teléfono local de Costa Rica) y le ponemos +506
+      let senderPhone = '';
+      if (rawDigits.length >= 8) {
+        const localNumber = rawDigits.slice(-8); // Los últimos 8 dígitos
+        senderPhone = '+506' + localNumber;
+      } else {
+        senderPhone = '+' + rawDigits;
       }
 
-      console.log(`🎯 Teléfono final transformado para buscar en Supabase: ${senderPhone}`);
+      console.log(`🎯 Comando "${cleanText}" | Teléfono reconstruido para Supabase: ${senderPhone}`);
 
       // Consultar el residente en Supabase por su teléfono
       const { data: residente, error } = await supabase
@@ -73,7 +61,7 @@ export default async function handler(req, res) {
         .single();
 
       if (error || !residente) {
-        console.error(`❌ Residente no encontrado en Supabase para: ${senderPhone}`);
+        console.error(`❌ Residente no encontrado en Supabase para el teléfono: ${senderPhone}`);
         return res.status(200).json({ status: 'Residente no registrado' });
       }
 
