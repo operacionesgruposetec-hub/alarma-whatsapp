@@ -15,6 +15,7 @@ export default async function handler(req, res) {
 
   try {
     const body = req.body;
+    console.log("Evento recibido de Evolution:", JSON.stringify(body));
 
     if (body.event === 'MESSAGES-UPSERT' || body.event === 'messages.upsert') {
       const messageData = body.data;
@@ -40,18 +41,23 @@ export default async function handler(req, res) {
       if (validCommands.includes(cleanCommand)) {
         console.log(`Comando [${cleanCommand}] recibido de ${senderPhone} en el grupo ${remoteJid}`);
 
-        // 1. Consultar residente en Supabase
-        const { data: residente, error } = await supabase
+        // Consultar residente en Supabase de forma segura (sin .single para evitar crash)
+        const { data: residentes, error } = await supabase
           .from('residentes')
-          .select('*, residenciales(*)')
-          .eq('telefono', senderPhone)
-          .single();
+          .select('*')
+          .eq('telefono', senderPhone);
 
-        if (error || !residente) {
-          console.log(`Teléfono no autorizado: ${senderPhone}`);
-          return res.status(200).json({ status: 'Unauthorized sender' });
+        if (error) {
+          console.error("Error consultando Supabase:", error);
+          return res.status(200).json({ status: 'Supabase error', error: error.message });
         }
 
+        if (!residentes || residentes.length === 0) {
+          console.log(`Teléfono no encontrado en Supabase: ${senderPhone}`);
+          return res.status(200).json({ status: 'Unauthorized sender', phone: senderPhone });
+        }
+
+        const residente = residentes[0];
         const nombreResidente = residente.nombre || 'Residente';
         const casaResidente = residente.casa_lote || 'No especificada';
 
@@ -63,8 +69,8 @@ export default async function handler(req, res) {
 
         const respuestaTexto = `🚨 *ALERTA ACTIVADA* 🚨\n\n*Tipo:* ${tipoAlerta}\n*Reportado por:* ${nombreResidente}\n*Casa/Lote:* ${casaResidente}\n\n_El sistema ha registrado su aviso._`;
 
-        // 2. Enviar respuesta de vuelta al grupo mediante Evolution API
-        await fetch(`${evolutionUrl}/message/sendText/${evolutionInstance}`, {
+        // Enviar respuesta al grupo
+        const evoResponse = await fetch(`${evolutionUrl}/message/sendText/${evolutionInstance}`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -75,6 +81,9 @@ export default async function handler(req, res) {
             text: respuestaTexto
           })
         });
+
+        const evoResult = await evoResponse.json();
+        console.log("Respuesta de Evolution API al enviar:", evoResult);
 
         return res.status(200).json({ 
           status: 'Success', 
@@ -87,7 +96,7 @@ export default async function handler(req, res) {
     return res.status(200).json({ status: 'Event received, no action needed' });
 
   } catch (err) {
-    console.error('Error en el webhook:', err);
-    return res.status(500).json({ error: 'Internal Server Error' });
+    console.error('Error crítico en el webhook:', err);
+    return res.status(500).json({ error: err.message });
   }
 }
