@@ -17,10 +17,13 @@ export default async function handler(req, res) {
   try {
     const body = req.body;
 
-    // Aceptar tanto 'MESSAGES-UPSERT' como 'messages.upsert' por seguridad
-    if (body.event === 'MESSAGES-UPSERT' || body.event === 'messages.upsert') {
+    // Imprimir el payload en los logs de Vercel para depurar cualquier detalle
+    console.log("Payload recibido de Evolution:", JSON.stringify(body, null, 2));
+
+    // Aceptar tanto 'MESSAGES_UPSERT' como 'messages.upsert' por seguridad
+    if (body.event === 'MESSAGES_UPSERT' || body.event === 'messages.upsert') {
       const messageData = body.data;
-      
+
       const remoteJid = messageData?.key?.remoteJid;
       const isGroup = remoteJid && remoteJid.endsWith('@g.us');
 
@@ -31,70 +34,14 @@ export default async function handler(req, res) {
       const participantJid = messageData?.key?.participant || messageData?.participant || '';
       const senderPhone = participantJid.split('@')[0];
 
-      const messageContent = 
-        messageData?.message?.conversation ||
-        messageData?.message?.extendedTextMessage?.text ||
-        '';
-
-      const cleanCommand = messageContent.trim().toUpperCase();
-      const validCommands = ['M', 'S', 'I', 'P'];
-
-      if (validCommands.includes(cleanCommand)) {
-        console.log(`Comando [${cleanCommand}] recibido de ${senderPhone} en el grupo ${remoteJid}`);
-
-        // Consultar residente en Supabase usando .maybeSingle() para evitar que falle si no existe
-        const { data: residente, error } = await supabase
-          .from('residentes')
-          .select('*')
-          .eq('telefono', senderPhone)
-          .maybeSingle();
-
-        if (error) {
-          console.error("Error en Supabase:", error);
-          return res.status(200).json({ status: 'Database error' });
-        }
-
-        if (!residente) {
-          console.log(`Teléfono no autorizado: ${senderPhone}`);
-          return res.status(200).json({ status: 'Unauthorized sender' });
-        }
-
-        const nombreResidente = residente.nombre || 'Residente';
-        const casaResidente = residente.casa_lote || 'No especificada';
-
-        let tipoAlerta = '';
-        if (cleanCommand === 'M') tipoAlerta = 'Médica 🚑';
-        if (cleanCommand === 'S') tipoAlerta = 'Seguridad / Asalto 🚨';
-        if (cleanCommand === 'I') tipoAlerta = 'Incendio 🔥';
-        if (cleanCommand === 'P') tipoAlerta = 'Pánico / General ⚠️';
-
-        const respuestaTexto = `🚨 *ALERTA ACTIVADA* 🚨\n\n*Tipo:* ${tipoAlerta}\n*Reportado por:* ${nombreResidente}\n*Casa/Lote:* ${casaResidente}\n\n_El sistema ha registrado su aviso._`;
-
-        // Enviar respuesta de vuelta al grupo mediante Evolution API
-        await fetch(`${evolutionUrl}/message/sendText/${evolutionInstance}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'apikey': evolutionKey
-          },
-          body: JSON.stringify({
-            number: remoteJid,
-            text: respuestaTexto
-          })
-        });
-
-        return res.status(200).json({ 
-          status: 'Success', 
-          command: cleanCommand, 
-          residente: nombreResidente 
-        });
-      }
+      // Aquí puedes continuar con tu lógica para guardar en Supabase o responder
+      console.log(`Mensaje de grupo detectado de el número: ${senderPhone}`);
     }
 
-    return res.status(200).json({ status: 'Event received, no action needed' });
+    return res.status(200).json({ status: 'Webhook procesado correctamente' });
 
-  } catch (err) {
-    console.error('Error crítico en el webhook:', err);
-    return res.status(500).json({ error: 'Internal Server Error' });
+  } catch (error) {
+    console.error('Error al procesar el webhook:', error);
+    return res.status(500).json({ error: 'Error interno del servidor' });
   }
 }
