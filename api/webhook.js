@@ -1,5 +1,4 @@
 import { createClient } from '@supabase/supabase-js';
-import axios from 'axios';
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_ANON_KEY;
@@ -31,18 +30,13 @@ export default async function handler(req, res) {
       const messageText = messageData?.message?.conversation || 
                           messageData?.message?.extendedTextMessage?.text || '';
 
-      // Obtener el número de teléfono del emisor de manera limpia
+      // Obtener el número de teléfono del emisor
       const participantJid = messageData?.key?.participant || messageData?.participant || messageData?.key?.remoteJid || '';
       let rawPhone = participantJid.split('@')[0];
-      
-      // Limpiar caracteres extra si los trae (ej. de grupos de WhatsApp)
       rawPhone = rawPhone.replace(/[^0-9]/g, '');
-
-      // Construir formato con + (Ej: +50660301041). Ajusta los últimos dígitos según tu país si es necesario, 
-      // o probemos buscando directamente por coincidencia parcial si el número completo varía.
       const senderPhone = '+' + rawPhone;
 
-      console.log(`Texto extraído: "${messageText}" | Teléfono procesado para buscar: ${senderPhone}`);
+      console.log(`Texto extraído: "${messageText}" | Teléfono procesado: ${senderPhone}`);
 
       // Activación al recibir 'M' o 'S'
       if (messageText.trim().toUpperCase() === 'M' || messageText.trim().toUpperCase() === 'S') {
@@ -55,7 +49,7 @@ export default async function handler(req, res) {
           .single();
 
         if (error || !residente) {
-          console.error('Error o residente no encontrado en Supabase para:', senderPhone, error);
+          console.error('Residente no encontrado en Supabase para:', senderPhone, error);
           return res.status(200).json({ status: 'Residente no registrado' });
         }
 
@@ -64,20 +58,26 @@ export default async function handler(req, res) {
         const nombreResidente = residente.nombre || 'Desconocido';
         const domicilio = residente.domicilio || 'No especificado';
 
+        // Headers comunes para Evolution API
+        const headers = {
+          'apikey': evolutionKey,
+          'Content-Type': 'application/json'
+        };
+
         // 1. ENVIAR IMAGEN
         const imagenUrl = "https://images.unsplash.com/photo-1541872703-74c5e44368f9?q=80&w=1000&auto=format&fit=crop";
-        await axios.post(
-          `${evolutionUrl}/message/sendMedia/${evolutionInstance}`,
-          {
+        await fetch(`${evolutionUrl}/message/sendMedia/${evolutionInstance}`, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({
             number: remoteJid,
             mediaMessage: {
               mediatype: "image",
               media: imagenUrl,
               caption: "🔴 ALERTA DE ALARMA VECINAL 🔴"
             }
-          },
-          { headers: { apikey: evolutionKey, 'Content-Type': 'application/json' } }
-        );
+          })
+        });
 
         // 2. ENVIAR TEXTO
         const respuestaTexto = `👤 SR/SRA: ${nombreResidente}\n` +
@@ -85,27 +85,27 @@ export default async function handler(req, res) {
           `📅 FECHA Y HORA: ${new Date().toLocaleString()}\n\n` +
           `⚠️ ATENCION VECINOS ⚠️`;
 
-        await axios.post(
-          `${evolutionUrl}/message/sendText/${evolutionInstance}`,
-          {
+        await fetch(`${evolutionUrl}/message/sendText/${evolutionInstance}`, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({
             number: remoteJid,
             text: respuestaTexto
-          },
-          { headers: { apikey: evolutionKey, 'Content-Type': 'application/json' } }
-        );
+          })
+        });
 
         // 3. ENVIAR UBICACIÓN
-        await axios.post(
-          `${evolutionUrl}/message/sendLocation/${evolutionInstance}`,
-          {
+        await fetch(`${evolutionUrl}/message/sendLocation/${evolutionInstance}`, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({
             number: remoteJid,
             name: `Ubicación de Emergencia - ${nombreResidente}`,
             address: domicilio,
             latitude: residente.latitud || 9.856,
             longitude: residente.longitud || -83.914
-          },
-          { headers: { apikey: evolutionKey, 'Content-Type': 'application/json' } }
-        );
+          })
+        });
 
         console.log('¡Secuencia de alerta enviada con éxito!');
       }
