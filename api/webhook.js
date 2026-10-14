@@ -23,6 +23,7 @@ export default async function handler(req, res) {
       const rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.sender || '';
       const pushName = messageData?.pushName || 'Vecino';
       
+      // Extraemos el identificador limpio que llega de WhatsApp
       let cleanPhone = rawParticipant.split('@')[0].split(':')[0].replace(/\D/g, '');
 
       const messageText = messageData?.message?.conversation || 
@@ -35,7 +36,7 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Omitted' });
       }
 
-      console.log(`🎯 [1] Mensaje recibido de grupo. Participante: [${rawParticipant}] | Comando: [${cleanText}]`);
+      console.log(`🎯 [1] Mensaje recibido de grupo. Participante: [${rawParticipant}] | Limpio: [${cleanPhone}] -> Comando: [${cleanText}]`);
 
       const evolutionUrl = process.env.EVOLUTION_API_URL;
       const evolutionKey = process.env.EVOLUTION_API_KEY;
@@ -46,48 +47,17 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json'
       };
 
-      // Si es un LID, intentamos obtener el teléfono real consultando la API de grupos de forma segura con timeout
-      if (rawParticipant.includes('@lid')) {
-        try {
-          console.log(`🔍 [2] Consultando Evolution API para traducir LID de grupo...`);
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 4000); // Límite de 4 segundos
-
-          const groupInfoRes = await fetch(`${evolutionUrl}/group/findGroupInfos/${instanceName}?groupJid=${encodeURIComponent(remoteJid)}`, {
-            method: 'GET',
-            headers: headers,
-            signal: controller.signal
-          });
-          clearTimeout(timeoutId);
-
-          if (groupInfoRes.ok) {
-            const groupData = await groupInfoRes.json();
-            if (groupData && groupData.participants) {
-              const miembro = groupData.participants.find(p => p.id === rawParticipant || (p.lid && p.lid === rawParticipant));
-              if (miembro && miembro.id && !miembro.id.includes('@lid')) {
-                let realPhone = miembro.id.split('@')[0].split(':')[0].replace(/\D/g, '');
-                if (realPhone) {
-                  cleanPhone = realPhone;
-                  console.log(`✅ [3] ¡LID traducido exitosamente a teléfono real!: [${cleanPhone}]`);
-                }
-              }
-            }
-          }
-        } catch (apiErr) {
-          console.log(`⚠️ [3] Aviso: No se pudo traducir el LID mediante Evolution API (${apiErr.message}), continuando con el flujo...`);
-        }
-      }
-
       // -----------------------------------------------------------------
-      // CONSULTA A GOOGLE SHEETS
+      // CONSULTA DIRECTA A GOOGLE SHEETS (Delegando la validación a la hoja)
       // -----------------------------------------------------------------
       const sheetApiUrl = process.env.GOOGLE_SHEET_API_URL;
       let datosResidente = null;
 
-      if (sheetApiUrl && cleanPhone) {
+      if (sheetApiUrl) {
         try {
-          console.log(`📊 [4] Consultando Google Sheets con el teléfono: [${cleanPhone}]`);
-          const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(cleanPhone)}&lid=${encodeURIComponent(rawParticipant)}`;
+          console.log(`📊 [2] Consultando Google Sheets con el parámetro: [${cleanPhone}]`);
+          // Enviamos tanto el teléfono limpio como el participante crudo por si la hoja quiere evaluarlo
+          const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(cleanPhone)}&participante=${encodeURIComponent(rawParticipant)}`;
           const response = await fetch(urlConsulta, { redirect: 'follow' });
           const rawText = await response.text();
 
@@ -100,21 +70,21 @@ export default async function handler(req, res) {
               longitud: parseFloat(data.longitud),
               foto: data.foto
             };
-            console.log(`✅ [5] Residente encontrado en Google Sheet: [${datosResidente.nombre}]`);
+            console.log(`✅ [3] Residente validado por Google Sheet: [${datosResidente.nombre}]`);
           } else {
-            console.log(`⚠️ [5] El número [${cleanPhone}] no se encontró en la Columna B de la hoja.`);
+            console.log(`⚠️ [3] Google Sheet indicó que el número [${cleanPhone}] no está registrado.`);
           }
         } catch (sheetError) {
-          console.error(`❌ [5] Error consultando Google Sheet:`, sheetError.message);
+          console.error(`❌ [3] Error consultando Google Sheet:`, sheetError.message);
         }
       }
 
       if (!datosResidente) {
-        console.log(`❌ [6] Alerta rechazada: El número no está registrado en la base de datos.`);
-        return res.status(200).json({ status: 'Ignored: Phone number not found in database' });
+        console.log(`❌ [4] Alerta rechazada: Google Sheets no autorizó el número.`);
+        return res.status(200).json({ status: 'Ignored: Resident not found in database' });
       }
 
-      console.log(`🚀 [7] Enviando respuesta a WhatsApp...`);
+      console.log(`🚀 [5] Enviando respuesta multimedia al grupo de WhatsApp...`);
 
       // 1. ENVIAR TEXTO
       const respuestaTexto = `👤 SR/SRA: ${datosResidente.nombre}\n` +
@@ -160,13 +130,13 @@ export default async function handler(req, res) {
         })
       });
 
-      console.log('✨ [8] ¡Secuencia de alerta completada con éxito!');
+      console.log('✨ [6] ¡Secuencia de alerta completada con éxito!');
     }
 
     return res.status(200).json({ status: 'Webhook procesado correctamente' });
 
   } catch (error) {
-    console.error('❌ Error crítico general en el webhook:', error);
+    console.error('❌ Error crítico en el webhook:', error);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
 }
