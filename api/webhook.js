@@ -9,7 +9,6 @@ export default async function handler(req, res) {
     if (body.event === 'MESSAGES_UPSERT' || body.event === 'messages.upsert') {
       const messageData = body.data;
 
-      // 1. Obtener el ID exacto del grupo (@g.us)
       const remoteJid = messageData?.key?.remoteJid || messageData?.remoteJid;
       const isGroup = remoteJid && remoteJid.endsWith('@g.us');
 
@@ -17,16 +16,13 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Ignored: Not a group message' });
       }
 
-      // 2. Extraer el participante
       const rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.sender || '';
-      
       let cleanPhone = rawParticipant.split('@')[0].split(':')[0];
       if (cleanPhone && !cleanPhone.startsWith('+')) {
         cleanPhone = '+' + cleanPhone;
       }
 
       const pushName = messageData?.pushName || 'Vecino del Residencial';
-
       const messageText = messageData?.message?.conversation || 
                           messageData?.message?.extendedTextMessage?.text || 
                           messageData?.body || '';
@@ -39,9 +35,6 @@ export default async function handler(req, res) {
 
       console.log(`🎯 Mensaje recibido en grupo [${remoteJid}] de [${cleanPhone}] (${pushName}) con comando: [${cleanText}]`);
 
-      // -----------------------------------------------------------------
-      // DICCIONARIO DE RESIDENTES
-      // -----------------------------------------------------------------
       const residentesDB = {
         "+103693412229282": {
           nombre: "Ulises Martínez Pineda",
@@ -58,7 +51,7 @@ export default async function handler(req, res) {
       };
 
       const datosResidente = residentesDB[cleanPhone] || {
-        nombre: `Vecino Registrado (${cleanPhone})`,
+        nombre: `${pushName} (${cleanPhone})`,
         domicilio: "Residencial General",
         latitud: 9.856,
         longitud: -83.914
@@ -75,53 +68,29 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json'
       };
 
-      // 1. ENVIAR TEXTO DESCRIPTIVO AL GRUPO
       const respuestaTexto = `👤 SR/SRA: ${datosResidente.nombre}\n` +
         `🏠 DOMICILIO: ${datosResidente.domicilio}\n` +
         `📅 FECHA Y HORA: ${new Date().toLocaleString()}\n\n` +
         `⚠️ ATENCION VECINOS (Comando: ${cleanText}) ⚠️`;
 
-      const resText = await fetch(`${evolutionUrl}/message/sendText/${evolutionInstance}`, {
+      // Probando la ruta alternativa de envío de texto de Evolution API (/message/sendText o /chat/sendText)
+      const targetEndpoint = `${evolutionUrl}/message/sendText/${evolutionInstance}`;
+      console.log(`🚀 Intentando enviar a: ${targetEndpoint}`);
+
+      const resText = await fetch(targetEndpoint, {
         method: 'POST',
         headers: headers,
         body: JSON.stringify({
           number: remoteJid,
-          text: respuestaTexto,
-          delay: 1200
-        })
-      });
-      const dataText = await resText.json();
-      console.log('📡 Resp. Envío Texto:', JSON.stringify(dataText));
-
-      // 2. ENVIAR IMAGEN DE ALERTA AL GRUPO
-      const imagenUrl = "https://images.unsplash.com/photo-1541872703-74c5e44368f9?q=80&w=1000&auto=format&fit=crop";
-      await fetch(`${evolutionUrl}/message/sendMedia/${evolutionInstance}`, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify({
-          number: remoteJid,
-          mediaMessage: {
-            mediatype: "image",
-            media: imagenUrl,
-            caption: `🔴 ALERTA DE ALARMA VECINAL (${cleanText}) 🔴`
-          }
+          text: respuestaTexto
         })
       });
 
-      // 3. ENVIAR UBICACIÓN GPS AL GRUPO
-      await fetch(`${evolutionUrl}/message/sendLocation/${evolutionInstance}`, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify({
-          number: remoteJid,
-          name: `Ubicación de Emergencia - ${datosResidente.nombre}`,
-          address: datosResidente.domicilio,
-          latitude: datosResidente.latitud,
-          longitude: datosResidente.longitud
-        })
-      });
+      const responseTextBody = await resText.text();
+      console.log('📡 Código HTTP:', resText.status);
+      console.log('📡 Cuerpo de Respuesta:', responseTextBody);
 
-      console.log('🚀 ¡Secuencia de alerta enviada con éxito al grupo!');
+      console.log('🚀 ¡Secuencia de prueba ejecutada!');
     }
 
     return res.status(200).json({ status: 'Webhook procesado correctamente' });
