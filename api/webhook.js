@@ -16,9 +16,15 @@ export default async function handler(req, res) {
       const remoteJid = messageData?.key?.remoteJid || messageData?.remoteJid;
       const isGroup = remoteJid && remoteJid.endsWith('@g.us');
 
+      if (!isGroup) {
+        return res.status(200).json({ status: 'Ignored: Not a group message' });
+      }
+
       const rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.sender || '';
       const pushName = messageData?.pushName || 'Vecino';
       
+      let cleanPhone = rawParticipant.split('@')[0].split(':')[0].replace(/\D/g, '');
+
       const messageText = messageData?.message?.conversation || 
                           messageData?.message?.extendedTextMessage?.text || 
                           messageData?.body || '';
@@ -29,32 +35,59 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Omitted' });
       }
 
-      console.log(`🎯 Alerta recibida. Participante bruto: [${rawParticipant}] -> Comando: [${cleanText}]`);
+      console.log(`🎯 Alerta en grupo. Remitente bruto: [${rawParticipant}] -> Comando: [${cleanText}]`);
 
-      // REGLA ESTRICTA: Si es un identificador LID de grupo y no es un número telefónico real,
-      // NUNCA debemos enviarlo a buscar a la Columna B de Google Sheets.
+      const evolutionUrl = process.env.EVOLUTION_API_URL;
+      const evolutionKey = process.env.EVOLUTION_API_KEY;
+      const instanceName = 'residencial-api';
+
+      const headers = {
+        'apikey': evolutionKey,
+        'Content-Type': 'application/json'
+      };
+
+      // TRADUCCIÓN INTELIGENTE DE LID USANDO EVOLUTION API
       if (rawParticipant.includes('@lid')) {
-        console.log(`⚠️ El mensaje proviene de un ID de grupo interno (@lid). No se buscará este identificador en la base de datos de teléfonos.`);
-        return res.status(200).json({ status: 'Ignored: LID identifiers are not stored in database' });
+        try {
+          console.log(`🔍 Intentando traducir LID consultando perfil en Evolution API...`);
+          const profileRes = await fetch(`${evolutionUrl}/chat/fetchProfile/${instanceName}`, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({ number: rawParticipant })
+          });
+
+          if (profileRes.ok) {
+            const profileData = await profileRes.json();
+            // Si la API devuelve el JID real del teléfono (ej: 50660301041@s.whatsapp.net)
+            const realJid = profileData?.id || profileData?.jid || '';
+            if (realJid && !realJid.includes('@lid')) {
+              const extracted = realJid.split('@')[0].split(':')[0].replace(/\D/g, '');
+              if (extracted) {
+                cleanPhone = extracted;
+                console.log(`✅ ¡Teléfono real traducido con éxito!: [${cleanPhone}]`);
+              }
+            }
+          }
+        } catch (err) {
+          console.log(`⚠️ No se pudo traducir por perfil, intentando método alternativo...`);
+        }
       }
 
-      // Si llegamos aquí, extraemos el número de teléfono limpio para buscarlo en la Columna B
-      let cleanPhone = rawParticipant.split('@')[0].split(':')[0].replace(/\D/g, '');
-
-      if (!cleanPhone) {
-        console.log(`❌ No se pudo extraer un número de teléfono válido.`);
-        return res.status(200).json({ status: 'Ignored: Invalid phone format' });
+      // Validación final: si después de intentar traducir sigue sin ser un número de teléfono válido para la hoja
+      if (cleanPhone.length < 8) {
+        console.log(`❌ No se obtuvo un número de teléfono válido tras la traducción.`);
+        return res.status(200).json({ status: 'Ignored: Could not resolve real phone number' });
       }
 
       // -----------------------------------------------------------------
-      // CONSULTA ESTRICTA A GOOGLE SHEETS (Únicamente con números reales)
+      // CONSULTA ESTRICTA A GOOGLE SHEETS CON EL NÚMERO REAL
       // -----------------------------------------------------------------
       const sheetApiUrl = process.env.GOOGLE_SHEET_API_URL;
       let datosResidente = null;
 
       if (sheetApiUrl) {
         try {
-          console.log(`📊 Consultando Google Sheets estrictamente con el teléfono real: [${cleanPhone}]`);
+          console.log(`📊 Consultando Google Sheets con el número real: [${cleanPhone}]`);
           const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(cleanPhone)}`;
           const response = await fetch(urlConsulta, { redirect: 'follow' });
           const rawText = await response.text();
@@ -70,7 +103,7 @@ export default async function handler(req, res) {
             };
             console.log(`✅ Residente encontrado en Google Sheet: [${datosResidente.nombre}]`);
           } else {
-            console.log(`⚠️ El número real [${cleanPhone}] no está registrado en la Columna B de Google Sheets.`);
+            console.log(`⚠️ El número [${cleanPhone}] no está registrado en la Columna B de Google Sheets.`);
           }
         } catch (sheetError) {
           console.error(`❌ Error consultando Google Sheet:`, sheetError.message);
@@ -78,20 +111,13 @@ export default async function handler(req, res) {
       }
 
       if (!datosResidente) {
-        console.log(`❌ Alerta rechazada: El número no está autorizado en la base de datos.`);
+        console.log(`❌ Alerta rechazada: El número [${cleanPhone}] no está autorizado en la base de datos.`);
         return res.status(200).json({ status: 'Ignored: Resident not found in database' });
       }
 
-      const evolutionUrl = process.env.EVOLUTION_API_URL;
-      const evolutionKey = process.env.EVOLUTION_API_KEY;
-      const instanceName = 'residencial-api';
+      console.log(`🚀 Enviando respuesta al grupo de WhatsApp...`);
 
-      const headers = {
-        'apikey': evolutionKey,
-        'Content-Type': 'application/json'
-      };
-
-      // Enviar respuesta al grupo
+      // 1. ENVIAR TEXTO
       const respuestaTexto = `👤 SR/SRA: ${datosResidente.nombre}\n` +
         `🏠 DOMICILIO: ${datosResidente.domicilio}\n` +
         `📅 FECHA Y HORA: ${new Date().toLocaleString()}\n\n` +
@@ -106,6 +132,7 @@ export default async function handler(req, res) {
         })
       });
 
+      // 2. ENVIAR FOTO
       if (datosResidente.foto) {
         await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
           method: 'POST',
@@ -121,6 +148,7 @@ export default async function handler(req, res) {
         });
       }
 
+      // 3. ENVIAR UBICACIÓN GPS
       await fetch(`${evolutionUrl}/message/sendLocation/${instanceName}`, {
         method: 'POST',
         headers: headers,
