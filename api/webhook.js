@@ -37,30 +37,33 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Omitted' });
       }
 
-      // Capturar el participante completo (ej. 10369341229282@lid o número normal)
-      const participant = messageData?.key?.participant || messageData?.participant || '';
-      console.log(`🔍 Participante detectado de WhatsApp: ${participant}`);
+      // Número a buscar (probamos primero con el número exacto y un comodín o sin el + si fuera necesario)
+      const targetPhone = '+50660301041';
+      console.log(`🎯 Consultando en tabla residentes el teléfono: [${targetPhone}]`);
 
-      // Para solucionar el mapeo del @lid de forma inmediata:
-      // Si el participante contiene '@lid', podemos buscar por tu teléfono real directamente para esta prueba
-      // o mapearlo. Usaremos tu teléfono real de Supabase si viene de tu @lid.
-      let senderPhone = '+50660301041'; // Tu número real en Supabase
-
-      console.log(`🎯 Buscando en Supabase el teléfono real: ${senderPhone}`);
-
-      // Consultar el residente en Supabase por su teléfono
+      // Consultar el residente en Supabase y capturar el error detallado si lo hay
       const { data: residente, error } = await supabase
         .from('residentes')
         .select('*, residenciales(*)')
-        .eq('teléfono', senderPhone)
-        .single();
+        .eq('teléfono', targetPhone)
+        .maybeSingle(); // Usamos maybeSingle para evitar excepciones si no hay registros exactos
 
-      if (error || !residente) {
-        console.error(`❌ Residente no encontrado en Supabase para el teléfono: ${senderPhone}`);
+      if (error) {
+        console.error('❌ Error devuelto por Supabase:', JSON.stringify(error));
+        return res.status(200).json({ status: 'Error en consulta Supabase' });
+      }
+
+      if (!residente) {
+        console.error(`❌ La consulta no arrojó ningún resultado para: [${targetPhone}]`);
+        
+        // Diagnóstico: vamos a listar brevemente lo que hay en la tabla para ver cómo guarda Supabase el formato
+        const { data: allResidents } = await supabase.from('residentes').select('nombre, teléfono').limit(5);
+        console.log('📋 Muestra de teléfonos guardados actualmente en Supabase:', JSON.stringify(allResidents));
+
         return res.status(200).json({ status: 'Residente no registrado' });
       }
 
-      console.log('✅ ¡Residente encontrado en Supabase!', residente.nombre);
+      console.log('✅ ¡Residente encontrado con éxito!', residente.nombre);
 
       const nombreResidente = residente.nombre || 'Desconocido';
       const domicilio = residente.domicilio || residente.residencial_id || 'No especificado';
