@@ -14,8 +14,6 @@ export default async function handler(req, res) {
       }
 
       const remoteJid = messageData?.key?.remoteJid || messageData?.remoteJid;
-      const isGroup = remoteJid && remoteJid.endsWith('@g.us');
-
       const rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.sender || '';
       
       const messageText = messageData?.message?.conversation || 
@@ -30,10 +28,7 @@ export default async function handler(req, res) {
 
       console.log(`🎯 Mensaje recibido en grupo. Remitente bruto: [${rawParticipant}] -> Comando: [${cleanText}]`);
 
-      let telefonoFinal = '';
-
-      // Extracción limpia del número o aplicación del mapeo de prueba para tu LID
-      telefonoFinal = rawParticipant.split('@')[0].split(':')[0].replace(/\D/g, '');
+      let telefonoFinal = rawParticipant.split('@')[0].split(':')[0].replace(/\D/g, '');
 
       if (rawParticipant.includes('103693412229282') || telefonoFinal.length < 8) {
         telefonoFinal = "50660301041";
@@ -50,7 +45,6 @@ export default async function handler(req, res) {
           const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(telefonoFinal)}`;
           console.log(`🌐 URL de consulta generada: ${urlConsulta}`);
           
-          // FORZAMOS A SEGUIR LA REDIRECCIÓN DE GOOGLE APPS SCRIPT
           const response = await fetch(urlConsulta, { 
             method: 'GET', 
             redirect: 'follow' 
@@ -106,20 +100,35 @@ export default async function handler(req, res) {
         })
       });
 
-      // 2. ENVIAR FOTO DESDE LA HOJA
-      if (datosResidente.foto) {
-        await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
-          method: 'POST',
-          headers: headers,
-          body: JSON.stringify({
-            number: remoteJid,
-            mediaMessage: {
-              mediatype: "image",
-              media: datosResidente.foto,
-              caption: `🔴 FOTO DE LA CASA - ALARMA VECINAL (${cleanText}) 🔴`
-            }
-          })
-        });
+      // 2. ENVIAR FOTO DESDE LA HOJA (Convertida a URL de acceso directo a imagen)
+      if (datosResidente.foto && datosResidente.foto.trim() !== "") {
+        let directImageUrl = datosResidente.foto.trim();
+
+        // Si es un enlace de Google Drive, convertimos el ID en URL directa de imagen
+        const driveMatch = directImageUrl.match(/\/d\/([a-zA-Z0-9_-]+)/) || directImageUrl.match(/id=([a-zA-Z0-9_-]+)/);
+        if (driveMatch && driveMatch[1]) {
+          const driveFileId = driveMatch[1];
+          directImageUrl = `https://lh3.googleusercontent.com/d/${driveFileId}`;
+        }
+
+        console.log(`🖼️ Intentando enviar foto desde la URL directa: ${directImageUrl}`);
+
+        try {
+          await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({
+              number: remoteJid,
+              mediaMessage: {
+                mediatype: "image",
+                media: directImageUrl,
+                caption: `🔴 FOTO DE LA CASA - ALARMA VECINAL (${cleanText}) 🔴`
+              }
+            })
+          });
+        } catch (mediaErr) {
+          console.error("❌ Error enviando foto a Evolution API:", mediaErr.message);
+        }
       }
 
       // 3. ENVIAR UBICACIÓN GPS DESDE LA HOJA
