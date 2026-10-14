@@ -1,76 +1,148 @@
-function doGet(e) {
-  try {
-    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("RESIDENTES");
-    if (!sheet) {
-      return responderJSON({ encontrado: false, error: "Pestaña RESIDENTES no encontrada" });
-    }
-
-    var rows = sheet.getDataRange().getValues();
-    var telefonoBuscado = String(e.parameter.telefono || "").replace(/\D/g, '');
-    
-    // Si viene con código largo, tomamos los últimos dígitos para comparar
-    var digitosBuscados = telefonoBuscado;
-    if (digitosBuscados.length > 8) {
-      digitosBuscados = digitosBuscados.slice(-8);
-    }
-
-    var resultado = { encontrado: false };
-    var filaEncontrada = null;
-
-    // 1. Intentar buscar por coincidencia exacta o parcial del teléfono en la Columna B
-    if (rows.length > 1) {
-      for (var i = 1; i < rows.length; i++) {
-        var row = rows[i];
-        var telefonoHoja = String(row[1] || "").replace(/\D/g, '');
-        var digitosHoja = telefonoHoja;
-        if (digitosHoja.length > 8) {
-          digitosHoja = digitosHoja.slice(-8);
-        }
-
-        if (telefonoHoja && digitosBuscados && (telefonoHoja === telefonoBuscado || digitosHoja === digitosBuscados || telefonoHoja.endsWith(digitosBuscados) || digitosBuscados.endsWith(digitosHoja))) {
-          filaEncontrada = row;
-          break;
-        }
-      }
-
-      // 2. MODODO RESGUARDO AUTOMÁTICO: Si es un ID de prueba de WhatsApp (como @lid) y no hay match exacto, 
-      // tomamos el primer residente de la lista para que la prueba fluya sin quemar código por usuario.
-      if (!filaEncontrada && rows.length > 1) {
-        filaEncontrada = rows[1]; // Toma el primer residente registrado por defecto
-      }
-
-      if (filaEncontrada) {
-        var coordsString = String(filaEncontrada[4] || "").trim(); // Columna E
-        var lat = 9.851886;
-        var lon = -83.945423;
-        
-        if (coordsString.includes(",")) {
-          var partes = coordsString.split(",");
-          lat = parseFloat(partes[0].trim()) || lat;
-          lon = parseFloat(partes[1].trim()) || lon;
-        }
-
-        resultado = {
-          encontrado: true,
-          codigoCliente: filaEncontrada[0], // Columna A
-          telefono: filaEncontrada[1],      // Columna B
-          nombre: filaEncontrada[2],        // Columna C
-          domicilio: filaEncontrada[3],     // Columna D
-          latitud: lat,
-          longitud: lon,
-          foto: filaEncontrada[5] || ""     // Columna F
-        };
-      }
-    }
-
-    return responderJSON(resultado);
-
-  } catch (err) {
-    return responderJSON({ encontrado: false, error: err.toString() });
+export default async function handler(req, res) {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Método no permitido' });
   }
-}
 
-function responderJSON(objeto) {
-  return ContentService.createTextOutput(JSON.stringify(objeto))
-    .setMimeType(ContentService.MimeType.JSON);
+  try {
+    const body = req.body;
+
+    if (body.event === 'MESSAGES_UPSERT' || body.event === 'messages.upsert') {
+      const messageData = body.data;
+
+      if (messageData?.key?.fromMe) {
+        return res.status(200).json({ status: 'Ignored: From me' });
+      }
+
+      const remoteJid = messageData?.key?.remoteJid || messageData?.remoteJid;
+      const isGroup = remoteJid && remoteJid.endsWith('@g.us');
+
+      if (!isGroup) {
+        return res.status(200).json({ status: 'Ignored: Not a group message' });
+      }
+
+      // Extraer datos del remitente y limpiar formato
+      const rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.sender || '';
+      const pushName = messageData?.pushName || 'Vecino del Residencial';
+      
+      let cleanPhone = rawParticipant.split('@')[0].split(':')[0];
+      cleanPhone = cleanPhone.replace(/[^0-9+]/g, '');
+      
+      if (cleanPhone && !cleanPhone.startsWith('+')) {
+        cleanPhone = '+' + cleanPhone;
+      }
+
+      const messageText = messageData?.message?.conversation || 
+                          messageData?.message?.extendedTextMessage?.text || 
+                          messageData?.body || '';
+
+      const cleanText = messageText.trim().toUpperCase();
+
+      if (!['M', 'S', 'I', 'P'].includes(cleanText)) {
+        return res.status(200).json({ status: 'Omitted' });
+      }
+
+      console.log(`🎯 Alerta recibida en grupo. Remitente bruto: [${rawParticipant}] | Tel extraído: [${cleanPhone}] | Nombre: [${pushName}] -> Comando: [${cleanText}]`);
+
+      // -----------------------------------------------------------------
+      // CONSULTA DINÁMICA A GOOGLE SHEETS
+      // -----------------------------------------------------------------
+      const sheetApiUrl = process.env.GOOGLE_SHEET_API_URL;
+      
+      let datosResidente = {
+        nombre: pushName !== 'Vecino del Residencial' ? pushName : `Vecino (${cleanPhone})`,
+        domicilio: "Residencial General",
+        latitud: 9.851886,
+        longitud: -83.945423,
+        foto: "https://images.unsplash.com/photo-1541872703-74c5e44368f9?q=80&w=1000&auto=format&fit=crop"
+      };
+
+      if (sheetApiUrl) {
+        try {
+          const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(cleanPhone)}&nombre=${encodeURIComponent(pushName)}`;
+          const response = await fetch(urlConsulta, { redirect: 'follow' });
+          const rawText = await response.text();
+
+          try {
+            const data = JSON.parse(rawText);
+            if (data && data.encontrado) {
+              datosResidente = {
+                nombre: data.nombre || datosResidente.nombre,
+                domicilio: data.domicilio || datosResidente.domicilio,
+                latitud: data.latitud || datosResidente.latitud,
+                longitud: data.longitud || datosResidente.longitud,
+                foto: (data.foto && data.foto.startsWith('http')) ? data.foto : datosResidente.foto
+              };
+              console.log('✅ Residente encontrado en Google Sheet:', datosResidente.nombre);
+            } else {
+              console.log('⚠️ No se encontró coincidencia directa, usando datos de respaldo.');
+            }
+          } catch (jsonErr) {
+            console.error('❌ La respuesta de Google Sheet no fue un JSON válido:', rawText.substring(0, 100));
+          }
+
+        } catch (sheetError) {
+          console.error('❌ Error consultando Google Sheet:', sheetError);
+        }
+      }
+
+      const evolutionUrl = process.env.EVOLUTION_API_URL;
+      const evolutionKey = process.env.EVOLUTION_API_KEY;
+      const instanceName = 'residencial-api';
+
+      const headers = {
+        'apikey': evolutionKey,
+        'Content-Type': 'application/json'
+      };
+
+      // 1. ENVIAR TEXTO DESCRIPTIVO
+      const respuestaTexto = `👤 SR/SRA: ${datosResidente.nombre}\n` +
+        `🏠 DOMICILIO: ${datosResidente.domicilio}\n` +
+        `📅 FECHA Y HORA: ${new Date().toLocaleString()}\n\n` +
+        `⚠️ ATENCION VECINOS (Comando: ${cleanText}) ⚠️`;
+
+      await fetch(`${evolutionUrl}/message/sendText/${instanceName}`, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({
+          number: remoteJid,
+          text: respuestaTexto
+        })
+      });
+
+      // 2. ENVIAR FOTO DE LA CASA
+      await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({
+          number: remoteJid,
+          mediaMessage: {
+            mediatype: "image",
+            media: datosResidente.foto,
+            caption: `🔴 FOTO DE LA CASA - ALARMA VECINAL (${cleanText}) 🔴`
+          }
+        })
+      });
+
+      // 3. ENVIAR UBICACIÓN GPS
+      await fetch(`${evolutionUrl}/message/sendLocation/${instanceName}`, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({
+          number: remoteJid,
+          name: `Ubicación - ${datosResidente.nombre}`,
+          address: datosResidente.domicilio,
+          latitude: datosResidente.latitud,
+          longitude: datosResidente.longitud
+        })
+      });
+
+      console.log('🚀 ¡Secuencia de alerta procesada con éxito!');
+    }
+
+    return res.status(200).json({ status: 'Webhook procesado correctamente' });
+
+  } catch (error) {
+    console.error('Error general en el webhook:', error);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
 }
