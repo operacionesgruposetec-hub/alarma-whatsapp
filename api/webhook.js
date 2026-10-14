@@ -9,7 +9,6 @@ export default async function handler(req, res) {
     if (body.event === 'MESSAGES_UPSERT' || body.event === 'messages.upsert') {
       const messageData = body.data;
 
-      // 1. Obtener el ID del grupo
       const remoteJid = messageData?.key?.remoteJid || messageData?.remoteJid;
       const isGroup = remoteJid && remoteJid.endsWith('@g.us');
 
@@ -17,7 +16,6 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Ignored: Not a group message' });
       }
 
-      // 2. Extraer remitente
       const rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.sender || '';
       let cleanPhone = rawParticipant.split('@')[0].split(':')[0];
       if (cleanPhone && !cleanPhone.startsWith('+')) {
@@ -25,7 +23,6 @@ export default async function handler(req, res) {
       }
 
       const pushName = messageData?.pushName || 'Vecino del Residencial';
-
       const messageText = messageData?.message?.conversation || 
                           messageData?.message?.extendedTextMessage?.text || 
                           messageData?.body || '';
@@ -38,9 +35,6 @@ export default async function handler(req, res) {
 
       console.log(`🎯 Alerta recibida en grupo [${remoteJid}] de [${cleanPhone}] (${pushName}) -> Comando: [${cleanText}]`);
 
-      // -----------------------------------------------------------------
-      // BASE DE DATOS LOCAL DE RESIDENTES
-      // -----------------------------------------------------------------
       const residentesDB = {
         "+103693412229282": {
           nombre: "Ulises Martínez Pineda",
@@ -68,8 +62,8 @@ export default async function handler(req, res) {
       const evolutionUrl = process.env.EVOLUTION_API_URL;
       const evolutionKey = process.env.EVOLUTION_API_KEY;
       
-      // Nombre exacto de la instancia visto en Evolution Manager v2.3.7
-      const instanceName = process.env.EVOLUTION_INSTANCE || 'residencial-api';
+      // Forzamos el nombre correcto de la instancia para evitar el error 404
+      const instanceName = 'residencial-api';
 
       const headers = {
         'apikey': evolutionKey,
