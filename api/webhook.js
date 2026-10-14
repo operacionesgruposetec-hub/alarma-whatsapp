@@ -48,15 +48,16 @@ export default async function handler(req, res) {
       if (sheetApiUrl) {
         try {
           const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(telefonoFinal)}`;
+          console.log(`🌐 URL de consulta generada: ${urlConsulta}`);
           
           // FORZAMOS A SEGUIR LA REDIRECCIÓN DE GOOGLE APPS SCRIPT
           const response = await fetch(urlConsulta, { 
-            method: 'GET',
+            method: 'GET', 
             redirect: 'follow' 
           });
 
           const rawText = await response.text();
-          console.log(`📥 Respuesta cruda de Google Apps Script:`, rawText);
+          console.log(`📥 Respuesta cruda de Google Apps Script recibida:`, rawText);
 
           const data = JSON.parse(rawText);
           if (data && data.encontrado) {
