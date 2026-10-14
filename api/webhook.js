@@ -9,7 +9,6 @@ export default async function handler(req, res) {
     if (body.event === 'MESSAGES_UPSERT' || body.event === 'messages.upsert') {
       const messageData = body.data;
 
-      // Ignorar mensajes enviados por el propio bot para evitar bucles o duplicados
       if (messageData?.key?.fromMe) {
         return res.status(200).json({ status: 'Ignored: From me' });
       }
@@ -21,10 +20,7 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Ignored: Not a group message' });
       }
 
-      // Extraer remitente
       const rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.sender || '';
-      
-      // Si es una identidad tipo @lid, intentamos limpiar o usar un identificador estándar
       let cleanPhone = rawParticipant.split('@')[0].split(':')[0];
       cleanPhone = cleanPhone.replace(/[^0-9+]/g, '');
       
@@ -60,15 +56,12 @@ export default async function handler(req, res) {
 
       if (sheetApiUrl) {
         try {
-          // Agregamos redirect: 'follow' para que fetch siga las redirecciones de Google
-          const response = await fetch(`${sheetApiUrl}?telefono=${encodeURIComponent(cleanPhone)}`, {
-            method: 'GET',
-            redirect: 'follow'
-          });
+          const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(cleanPhone)}`;
+          const response = await fetch(urlConsulta, { redirect: 'follow' });
+          const rawText = await response.text();
 
-          const contentType = response.headers.get('content-type');
-          if (contentType && contentType.includes('application/json')) {
-            const data = await response.json();
+          try {
+            const data = JSON.parse(rawText);
             if (data && data.encontrado) {
               datosResidente = {
                 nombre: data.nombre || datosResidente.nombre,
@@ -79,11 +72,12 @@ export default async function handler(req, res) {
               };
               console.log('✅ Residente encontrado en Google Sheet:', datosResidente.nombre);
             } else {
-              console.log('⚠️ Número no registrado en Google Sheet, usando datos por defecto.');
+              console.log('⚠️ Número no registrado en la hoja, usando datos por defecto.');
             }
-          } else {
-            console.error('❌ Google Sheet no devolvió JSON. Verifica la URL y permisos.');
+          } catch (jsonErr) {
+            console.error('❌ La respuesta de Google Sheet no fue un JSON válido:', rawText.substring(0, 100));
           }
+
         } catch (sheetError) {
           console.error('❌ Error consultando Google Sheet:', sheetError);
         }
@@ -98,7 +92,7 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json'
       };
 
-      // 1. ENVIAR TEXTO DESCRIPTIVO AL GRUPO
+      // 1. ENVIAR TEXTO DESCRIPTIVO
       const respuestaTexto = `👤 SR/SRA: ${datosResidente.nombre}\n` +
         `🏠 DOMICILIO: ${datosResidente.domicilio}\n` +
         `📅 FECHA Y HORA: ${new Date().toLocaleString()}\n\n` +
@@ -113,7 +107,7 @@ export default async function handler(req, res) {
         })
       });
 
-      // 2. ENVIAR FOTO DE LA CASA AL GRUPO
+      // 2. ENVIAR FOTO DE LA CASA
       await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
         method: 'POST',
         headers: headers,
@@ -127,7 +121,7 @@ export default async function handler(req, res) {
         })
       });
 
-      // 3. ENVIAR UBICACIÓN GPS EXACTA AL GRUPO
+      // 3. ENVIAR UBICACIÓN GPS
       await fetch(`${evolutionUrl}/message/sendLocation/${instanceName}`, {
         method: 'POST',
         headers: headers,
@@ -149,4 +143,4 @@ export default async function handler(req, res) {
     console.error('Error general en el webhook:', error);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
-}
+}0
