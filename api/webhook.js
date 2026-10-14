@@ -9,7 +9,7 @@ export default async function handler(req, res) {
     if (body.event === 'MESSAGES_UPSERT' || body.event === 'messages.upsert') {
       const messageData = body.data;
 
-      // 1. Obtener el ID del grupo
+      // 1. Obtener el ID exacto del grupo (@g.us)
       const remoteJid = messageData?.key?.remoteJid || messageData?.remoteJid;
       const isGroup = remoteJid && remoteJid.endsWith('@g.us');
 
@@ -17,7 +17,7 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Ignored: Not a group message' });
       }
 
-      // 2. Extraer el participante tal cual viene
+      // 2. Extraer el participante
       const rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.sender || '';
       
       let cleanPhone = rawParticipant.split('@')[0].split(':')[0];
@@ -40,7 +40,7 @@ export default async function handler(req, res) {
       console.log(`🎯 Mensaje recibido en grupo [${remoteJid}] de [${cleanPhone}] (${pushName}) con comando: [${cleanText}]`);
 
       // -----------------------------------------------------------------
-      // DICCIONARIO DE RESIDENTES (Usando el identificador exacto del log)
+      // DICCIONARIO DE RESIDENTES
       // -----------------------------------------------------------------
       const residentesDB = {
         "+103693412229282": {
@@ -57,7 +57,6 @@ export default async function handler(req, res) {
         }
       };
 
-      // Búsqueda exacta del residente
       const datosResidente = residentesDB[cleanPhone] || {
         nombre: `Vecino Registrado (${cleanPhone})`,
         domicilio: "Residencial General",
@@ -76,7 +75,25 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json'
       };
 
-      // 1. ENVIAR IMAGEN DE ALERTA AL GRUPO
+      // 1. ENVIAR TEXTO DESCRIPTIVO AL GRUPO
+      const respuestaTexto = `👤 SR/SRA: ${datosResidente.nombre}\n` +
+        `🏠 DOMICILIO: ${datosResidente.domicilio}\n` +
+        `📅 FECHA Y HORA: ${new Date().toLocaleString()}\n\n` +
+        `⚠️ ATENCION VECINOS (Comando: ${cleanText}) ⚠️`;
+
+      const resText = await fetch(`${evolutionUrl}/message/sendText/${evolutionInstance}`, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({
+          number: remoteJid,
+          text: respuestaTexto,
+          delay: 1200
+        })
+      });
+      const dataText = await resText.json();
+      console.log('📡 Resp. Envío Texto:', JSON.stringify(dataText));
+
+      // 2. ENVIAR IMAGEN DE ALERTA AL GRUPO
       const imagenUrl = "https://images.unsplash.com/photo-1541872703-74c5e44368f9?q=80&w=1000&auto=format&fit=crop";
       await fetch(`${evolutionUrl}/message/sendMedia/${evolutionInstance}`, {
         method: 'POST',
@@ -88,21 +105,6 @@ export default async function handler(req, res) {
             media: imagenUrl,
             caption: `🔴 ALERTA DE ALARMA VECINAL (${cleanText}) 🔴`
           }
-        })
-      });
-
-      // 2. ENVIAR TEXTO DESCRIPTIVO AL GRUPO
-      const respuestaTexto = `👤 SR/SRA: ${datosResidente.nombre}\n` +
-        `🏠 DOMICILIO: ${datosResidente.domicilio}\n` +
-        `📅 FECHA Y HORA: ${new Date().toLocaleString()}\n\n` +
-        `⚠️ ATENCION VECINOS (Comando: ${cleanText}) ⚠️`;
-
-      await fetch(`${evolutionUrl}/message/sendText/${evolutionInstance}`, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify({
-          number: remoteJid,
-          text: respuestaTexto
         })
       });
 
