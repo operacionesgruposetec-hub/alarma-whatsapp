@@ -16,12 +16,9 @@ export default async function handler(req, res) {
       const remoteJid = messageData?.key?.remoteJid || messageData?.remoteJid;
       const isGroup = remoteJid && remoteJid.endsWith('@g.us');
 
-      // Extraer datos del remitente
       const rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.sender || '';
       const pushName = messageData?.pushName || 'Vecino';
       
-      let cleanPhone = rawParticipant.split('@')[0].split(':')[0].replace(/\D/g, '');
-
       const messageText = messageData?.message?.conversation || 
                           messageData?.message?.extendedTextMessage?.text || 
                           messageData?.body || '';
@@ -32,51 +29,32 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Omitted' });
       }
 
-      console.log(`🎯 Alerta recibida. Destino [${isGroup ? 'Grupo' : 'Privado'}]. Remitente: [${rawParticipant}] -> Comando: [${cleanText}]`);
+      console.log(`🎯 Alerta recibida. Participante bruto: [${rawParticipant}] -> Comando: [${cleanText}]`);
 
-      const evolutionUrl = process.env.EVOLUTION_API_URL;
-      const evolutionKey = process.env.EVOLUTION_API_KEY;
-      const instanceName = 'residencial-api';
+      // REGLA ESTRICTA: Si es un identificador LID de grupo y no es un número telefónico real,
+      // NUNCA debemos enviarlo a buscar a la Columna B de Google Sheets.
+      if (rawParticipant.includes('@lid')) {
+        console.log(`⚠️ El mensaje proviene de un ID de grupo interno (@lid). No se buscará este identificador en la base de datos de teléfonos.`);
+        return res.status(200).json({ status: 'Ignored: LID identifiers are not stored in database' });
+      }
 
-      const headers = {
-        'apikey': evolutionKey,
-        'Content-Type': 'application/json'
-      };
+      // Si llegamos aquí, extraemos el número de teléfono limpio para buscarlo en la Columna B
+      let cleanPhone = rawParticipant.split('@')[0].split(':')[0].replace(/\D/g, '');
 
-      // Si es un grupo y viene con LID, intentamos consultar los participantes para rescatar el número real
-      if (isGroup && rawParticipant.includes('@lid')) {
-        try {
-          const groupRes = await fetch(`${evolutionUrl}/group/participants/${instanceName}?groupJid=${encodeURIComponent(remoteJid)}`, {
-            method: 'GET',
-            headers: headers
-          });
-
-          if (groupRes.ok) {
-            const participantsList = await groupRes.json();
-            if (Array.isArray(participantsList)) {
-              const member = participantsList.find(p => p.id === rawParticipant || p.lid === rawParticipant);
-              if (member && member.id && !member.id.includes('@lid')) {
-                const realPhone = member.id.split('@')[0].split(':')[0].replace(/\D/g, '');
-                if (realPhone) {
-                  cleanPhone = realPhone;
-                  console.log(`✅ Teléfono real traducido desde el grupo: [${cleanPhone}]`);
-                }
-              }
-            }
-          }
-        } catch (evoErr) {
-          console.log(`⚠️ No se pudo traducir el LID mediante la API del grupo.`);
-        }
+      if (!cleanPhone) {
+        console.log(`❌ No se pudo extraer un número de teléfono válido.`);
+        return res.status(200).json({ status: 'Ignored: Invalid phone format' });
       }
 
       // -----------------------------------------------------------------
-      // CONSULTA A GOOGLE SHEETS
+      // CONSULTA ESTRICTA A GOOGLE SHEETS (Únicamente con números reales)
       // -----------------------------------------------------------------
       const sheetApiUrl = process.env.GOOGLE_SHEET_API_URL;
       let datosResidente = null;
 
-      if (sheetApiUrl && cleanPhone) {
+      if (sheetApiUrl) {
         try {
+          console.log(`📊 Consultando Google Sheets estrictamente con el teléfono real: [${cleanPhone}]`);
           const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(cleanPhone)}`;
           const response = await fetch(urlConsulta, { redirect: 'follow' });
           const rawText = await response.text();
@@ -92,23 +70,28 @@ export default async function handler(req, res) {
             };
             console.log(`✅ Residente encontrado en Google Sheet: [${datosResidente.nombre}]`);
           } else {
-            console.log(`⚠️ El número [${cleanPhone}] no está registrado en la Columna B de Google Sheets.`);
+            console.log(`⚠️ El número real [${cleanPhone}] no está registrado en la Columna B de Google Sheets.`);
           }
         } catch (sheetError) {
           console.error(`❌ Error consultando Google Sheet:`, sheetError.message);
         }
       }
 
-      // Si el número no está en la base de datos, rechazamos la alerta estrictamente
       if (!datosResidente) {
-        console.log(`❌ Alerta rechazada: El número [${cleanPhone}] no pertenece a ningún residente registrado.`);
+        console.log(`❌ Alerta rechazada: El número no está autorizado en la base de datos.`);
         return res.status(200).json({ status: 'Ignored: Resident not found in database' });
       }
 
-      // Destino de respuesta: si mandan comando por privado responde al privado, si es en grupo responde al grupo
-      const destinoRespuesta = remoteJid;
+      const evolutionUrl = process.env.EVOLUTION_API_URL;
+      const evolutionKey = process.env.EVOLUTION_API_KEY;
+      const instanceName = 'residencial-api';
 
-      // 1. ENVIAR TEXTO
+      const headers = {
+        'apikey': evolutionKey,
+        'Content-Type': 'application/json'
+      };
+
+      // Enviar respuesta al grupo
       const respuestaTexto = `👤 SR/SRA: ${datosResidente.nombre}\n` +
         `🏠 DOMICILIO: ${datosResidente.domicilio}\n` +
         `📅 FECHA Y HORA: ${new Date().toLocaleString()}\n\n` +
@@ -118,18 +101,17 @@ export default async function handler(req, res) {
         method: 'POST',
         headers: headers,
         body: JSON.stringify({
-          number: destinoRespuesta,
+          number: remoteJid,
           text: respuestaTexto
         })
       });
 
-      // 2. ENVIAR FOTO
       if (datosResidente.foto) {
         await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
           method: 'POST',
           headers: headers,
           body: JSON.stringify({
-            number: destinoRespuesta,
+            number: remoteJid,
             mediaMessage: {
               mediatype: "image",
               media: datosResidente.foto,
@@ -139,12 +121,11 @@ export default async function handler(req, res) {
         });
       }
 
-      // 3. ENVIAR UBICACIÓN GPS
       await fetch(`${evolutionUrl}/message/sendLocation/${instanceName}`, {
         method: 'POST',
         headers: headers,
         body: JSON.stringify({
-          number: destinoRespuesta,
+          number: remoteJid,
           name: `Ubicación - ${datosResidente.nombre}`,
           address: datosResidente.domicilio,
           latitude: datosResidente.latitud,
@@ -152,7 +133,7 @@ export default async function handler(req, res) {
         })
       });
 
-      console.log('✨ ¡Secuencia de alerta completada con éxito!');
+      console.log('✨ ¡Secuencia de alerta procesada con éxito!');
     }
 
     return res.status(200).json({ status: 'Webhook procesado correctamente' });
