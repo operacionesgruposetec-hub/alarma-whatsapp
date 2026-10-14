@@ -20,7 +20,6 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Ignored: Not a group message' });
       }
 
-      // Extraer datos del remitente
       const rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.sender || '';
       const pushName = messageData?.pushName || 'Vecino';
       
@@ -36,11 +35,8 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Omitted' });
       }
 
-      console.log(`🎯 Alerta en grupo. Participante bruto: [${rawParticipant}] -> Comando: [${cleanText}]`);
+      console.log(`🎯 [1] Mensaje recibido de grupo. Participante: [${rawParticipant}] | Comando: [${cleanText}]`);
 
-      // -----------------------------------------------------------------
-      // CONSULTA A EVOLUTION API PARA OBTENER EL TELÉFONO REAL SI ES UN LID
-      // -----------------------------------------------------------------
       const evolutionUrl = process.env.EVOLUTION_API_URL;
       const evolutionKey = process.env.EVOLUTION_API_KEY;
       const instanceName = 'residencial-api';
@@ -50,43 +46,48 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json'
       };
 
-      // Si el participante contiene '@lid', consultamos los datos del grupo o del contacto en Evolution API
+      // Si es un LID, intentamos obtener el teléfono real consultando la API de grupos de forma segura con timeout
       if (rawParticipant.includes('@lid')) {
         try {
-          // Consultar información del grupo para mapear participantes reales
+          console.log(`🔍 [2] Consultando Evolution API para traducir LID de grupo...`);
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 4000); // Límite de 4 segundos
+
           const groupInfoRes = await fetch(`${evolutionUrl}/group/findGroupInfos/${instanceName}?groupJid=${encodeURIComponent(remoteJid)}`, {
             method: 'GET',
-            headers: headers
+            headers: headers,
+            signal: controller.signal
           });
-          
+          clearTimeout(timeoutId);
+
           if (groupInfoRes.ok) {
             const groupData = await groupInfoRes.json();
-            // Buscar en los participantes del grupo si alguno coincide con el LID para extraer su JID de teléfono real
             if (groupData && groupData.participants) {
               const miembro = groupData.participants.find(p => p.id === rawParticipant || (p.lid && p.lid === rawParticipant));
               if (miembro && miembro.id && !miembro.id.includes('@lid')) {
-                let realPhoneExtracted = miembro.id.split('@')[0].split(':')[0].replace(/\D/g, '');
-                if (realPhoneExtracted) {
-                  cleanPhone = realPhoneExtracted;
-                  console.log(`✅ Teléfono real rescatado desde los participantes del grupo: [${cleanPhone}]`);
+                let realPhone = miembro.id.split('@')[0].split(':')[0].replace(/\D/g, '');
+                if (realPhone) {
+                  cleanPhone = realPhone;
+                  console.log(`✅ [3] ¡LID traducido exitosamente a teléfono real!: [${cleanPhone}]`);
                 }
               }
             }
           }
         } catch (apiErr) {
-          console.error('⚠️ No se pudo consultar la info del grupo en Evolution API:', apiErr.message);
+          console.log(`⚠️ [3] Aviso: No se pudo traducir el LID mediante Evolution API (${apiErr.message}), continuando con el flujo...`);
         }
       }
 
       // -----------------------------------------------------------------
-      // CONSULTA A GOOGLE SHEETS USANDO EL NÚMERO REAL OBTENIDO
+      // CONSULTA A GOOGLE SHEETS
       // -----------------------------------------------------------------
       const sheetApiUrl = process.env.GOOGLE_SHEET_API_URL;
       let datosResidente = null;
 
       if (sheetApiUrl && cleanPhone) {
         try {
-          const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(cleanPhone)}`;
+          console.log(`📊 [4] Consultando Google Sheets con el teléfono: [${cleanPhone}]`);
+          const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(cleanPhone)}&lid=${encodeURIComponent(rawParticipant)}`;
           const response = await fetch(urlConsulta, { redirect: 'follow' });
           const rawText = await response.text();
 
@@ -99,21 +100,23 @@ export default async function handler(req, res) {
               longitud: parseFloat(data.longitud),
               foto: data.foto
             };
-            console.log('✅ Residente encontrado en Google Sheet para el número:', cleanPhone);
+            console.log(`✅ [5] Residente encontrado en Google Sheet: [${datosResidente.nombre}]`);
           } else {
-            console.log(`⚠️ El número [${cleanPhone}] no está registrado en la Columna B de la hoja.`);
+            console.log(`⚠️ [5] El número [${cleanPhone}] no se encontró en la Columna B de la hoja.`);
           }
         } catch (sheetError) {
-          console.error('❌ Error consultando Google Sheet:', sheetError);
+          console.error(`❌ [5] Error consultando Google Sheet:`, sheetError.message);
         }
       }
 
       if (!datosResidente) {
-        console.log(`❌ Alerta rechazada: El número [${cleanPhone}] no está registrado en la base de datos.`);
+        console.log(`❌ [6] Alerta rechazada: El número no está registrado en la base de datos.`);
         return res.status(200).json({ status: 'Ignored: Phone number not found in database' });
       }
 
-      // 1. ENVIAR TEXTO CON DATOS DE LA HOJA
+      console.log(`🚀 [7] Enviando respuesta a WhatsApp...`);
+
+      // 1. ENVIAR TEXTO
       const respuestaTexto = `👤 SR/SRA: ${datosResidente.nombre}\n` +
         `🏠 DOMICILIO: ${datosResidente.domicilio}\n` +
         `📅 FECHA Y HORA: ${new Date().toLocaleString()}\n\n` +
@@ -128,7 +131,7 @@ export default async function handler(req, res) {
         })
       });
 
-      // 2. ENVIAR FOTO DE LA HOJA
+      // 2. ENVIAR FOTO
       if (datosResidente.foto) {
         await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
           method: 'POST',
@@ -144,7 +147,7 @@ export default async function handler(req, res) {
         });
       }
 
-      // 3. ENVIAR UBICACIÓN GPS DE LA HOJA
+      // 3. ENVIAR UBICACIÓN GPS
       await fetch(`${evolutionUrl}/message/sendLocation/${instanceName}`, {
         method: 'POST',
         headers: headers,
@@ -157,13 +160,13 @@ export default async function handler(req, res) {
         })
       });
 
-      console.log('🚀 ¡Alerta procesada con éxito consultando el grupo de Evolution API!');
+      console.log('✨ [8] ¡Secuencia de alerta completada con éxito!');
     }
 
     return res.status(200).json({ status: 'Webhook procesado correctamente' });
 
   } catch (error) {
-    console.error('Error general en el webhook:', error);
+    console.error('❌ Error crítico general en el webhook:', error);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
 }
