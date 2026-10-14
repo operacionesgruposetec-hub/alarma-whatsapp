@@ -33,25 +33,28 @@ export default async function handler(req, res) {
 
       const cleanText = messageText.trim().toUpperCase();
 
-      // FILTRO ESTRICTO: Solo M, S, I o P
+      // LOG INICIAL PARA VERIFICAR QUE ENTRA EL MENSAJE
+      console.log(`📥 Mensaje recibido en grupo. Texto detectado: "${cleanText}"`);
+
+      // FILTRO ESTRICTO: Solo procesar si el mensaje es exactamente M, S, I o P
       if (!['M', 'S', 'I', 'P'].includes(cleanText)) {
         return res.status(200).json({ status: 'Omitted' });
       }
 
-      // Obtener el participante crudo (incluso si viene con @lid)
-      const participant = messageData?.key?.participant || messageData?.participant || messageData?.author || '';
+      console.log(`🎯 ¡Comando válido '${cleanText}' detectado! Procesando...`);
+
+      // Extraer el teléfono manejando `@lid` tomando los últimos 8 dígitos del participante
+      const participant = messageData?.key?.participant || messageData?.participant || remoteJid || '';
       const rawDigits = participant.replace(/[^0-9]/g, '');
 
-      // Tomamos los últimos 8 dígitos del número (el teléfono local de Costa Rica) y le ponemos +506
       let senderPhone = '';
       if (rawDigits.length >= 8) {
-        const localNumber = rawDigits.slice(-8); // Los últimos 8 dígitos
-        senderPhone = '+506' + localNumber;
+        senderPhone = '+506' + rawDigits.slice(-8);
       } else {
         senderPhone = '+' + rawDigits;
       }
 
-      console.log(`🎯 Comando "${cleanText}" | Teléfono reconstruido para Supabase: ${senderPhone}`);
+      console.log(`📞 Teléfono reconstruido: ${senderPhone}`);
 
       // Consultar el residente en Supabase por su teléfono
       const { data: residente, error } = await supabase
