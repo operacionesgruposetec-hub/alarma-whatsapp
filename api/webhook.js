@@ -1,14 +1,3 @@
-import { createClient } from '@supabase/supabase-js';
-
-// URL y Llave directas para evitar fallos de lectura en Vercel
-const supabaseUrl = 'https://iljhfqeqpiencvtztxy.supabase.co';
-const supabaseKey = process.env.SUPABASE_ANON_KEY; 
-const supabase = createClient(supabaseUrl, supabaseKey);
-
-const evolutionUrl = process.env.EVOLUTION_API_URL;
-const evolutionKey = process.env.EVOLUTION_API_KEY;
-const evolutionInstance = process.env.EVOLUTION_INSTANCE;
-
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Método no permitido' });
@@ -38,28 +27,42 @@ export default async function handler(req, res) {
       }
 
       const targetPhone = '+50660301041';
-      console.log(`🎯 Consultando en tabla residentes el teléfono: [${targetPhone}]`);
+      console.log(`🎯 Consultando Supabase por HTTP directo para el teléfono: [${targetPhone}]`);
 
-      const { data: residente, error } = await supabase
-        .from('residentes')
-        .select('*, residenciales(*)')
-        .eq('teléfono', targetPhone)
-        .maybeSingle();
+      // Usar fetch directo a la API REST de Supabase para evitar errores de DNS del SDK
+      const supabaseUrl = 'https://iljhfqeqpiencvtztxy.supabase.co';
+      const supabaseKey = process.env.SUPABASE_ANON_KEY;
 
-      if (error) {
-        console.error('❌ Error devuelto por Supabase:', JSON.stringify(error));
+      const supabaseResponse = await fetch(`${supabaseUrl}/rest/v1/residentes?teléfono=eq.${encodeURIComponent(targetPhone)}`, {
+        method: 'GET',
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!supabaseResponse.ok) {
+        console.error('❌ Error en la respuesta de Supabase:', supabaseResponse.statusText);
         return res.status(200).json({ status: 'Error en consulta Supabase' });
       }
 
-      if (!residente) {
-        console.error(`❌ La consulta no arrojó ningún resultado para: [${targetPhone}]`);
+      const residentes = await supabaseResponse.json();
+
+      if (!residentes || residentes.length === 0) {
+        console.error(`❌ No se encontró ningún residente para el teléfono: [${targetPhone}]`);
         return res.status(200).json({ status: 'Residente no registrado' });
       }
 
+      const residente = residentes[0];
       console.log('✅ ¡Residente encontrado con éxito!', residente.nombre);
 
       const nombreResidente = residente.nombre || 'Desconocido';
       const domicilio = residente.domicilio || residente.residencial_id || 'No especificado';
+
+      const evolutionUrl = process.env.EVOLUTION_API_URL;
+      const evolutionKey = process.env.EVOLUTION_API_KEY;
+      const evolutionInstance = process.env.EVOLUTION_INSTANCE;
 
       const headers = {
         'apikey': evolutionKey,
