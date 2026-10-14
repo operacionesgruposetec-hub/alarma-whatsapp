@@ -9,6 +9,11 @@ export default async function handler(req, res) {
     if (body.event === 'MESSAGES_UPSERT' || body.event === 'messages.upsert') {
       const messageData = body.data;
 
+      // Ignorar mensajes enviados por el propio bot para evitar bucles o duplicados
+      if (messageData?.key?.fromMe) {
+        return res.status(200).json({ status: 'Ignored: From me' });
+      }
+
       const remoteJid = messageData?.key?.remoteJid || messageData?.remoteJid;
       const isGroup = remoteJid && remoteJid.endsWith('@g.us');
 
@@ -16,8 +21,13 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Ignored: Not a group message' });
       }
 
+      // Extraer remitente
       const rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.sender || '';
+      
+      // Si es una identidad tipo @lid, intentamos limpiar o usar un identificador estándar
       let cleanPhone = rawParticipant.split('@')[0].split(':')[0];
+      cleanPhone = cleanPhone.replace(/[^0-9+]/g, '');
+      
       if (cleanPhone && !cleanPhone.startsWith('+')) {
         cleanPhone = '+' + cleanPhone;
       }
@@ -41,7 +51,7 @@ export default async function handler(req, res) {
       const sheetApiUrl = process.env.GOOGLE_SHEET_API_URL;
       
       let datosResidente = {
-        nombre: `Vecino (${pushName})`,
+        nombre: pushName !== 'Vecino del Residencial' ? pushName : `Vecino (${cleanPhone})`,
         domicilio: "Residencial General",
         latitud: 9.856000,
         longitud: -83.914000,
@@ -50,19 +60,29 @@ export default async function handler(req, res) {
 
       if (sheetApiUrl) {
         try {
-          const response = await fetch(`${sheetApiUrl}?telefono=${encodeURIComponent(cleanPhone)}`);
-          const data = await response.json();
-          if (data && data.encontrado) {
-            datosResidente = {
-              nombre: data.nombre,
-              domicilio: data.domicilio,
-              latitud: data.latitud,
-              longitud: data.longitud,
-              foto: (data.foto && data.foto.startsWith('http')) ? data.foto : datosResidente.foto
-            };
-            console.log('✅ Residente encontrado en Google Sheet:', datosResidente.nombre);
+          // Agregamos redirect: 'follow' para que fetch siga las redirecciones de Google
+          const response = await fetch(`${sheetApiUrl}?telefono=${encodeURIComponent(cleanPhone)}`, {
+            method: 'GET',
+            redirect: 'follow'
+          });
+
+          const contentType = response.headers.get('content-type');
+          if (contentType && contentType.includes('application/json')) {
+            const data = await response.json();
+            if (data && data.encontrado) {
+              datosResidente = {
+                nombre: data.nombre || datosResidente.nombre,
+                domicilio: data.domicilio || datosResidente.domicilio,
+                latitud: data.latitud || datosResidente.latitud,
+                longitud: data.longitud || datosResidente.longitud,
+                foto: (data.foto && data.foto.startsWith('http')) ? data.foto : datosResidente.foto
+              };
+              console.log('✅ Residente encontrado en Google Sheet:', datosResidente.nombre);
+            } else {
+              console.log('⚠️ Número no registrado en Google Sheet, usando datos por defecto.');
+            }
           } else {
-            console.log('⚠️ Número no registrado en Google Sheet, usando datos por defecto.');
+            console.error('❌ Google Sheet no devolvió JSON. Verifica la URL y permisos.');
           }
         } catch (sheetError) {
           console.error('❌ Error consultando Google Sheet:', sheetError);
@@ -120,7 +140,7 @@ export default async function handler(req, res) {
         })
       });
 
-      console.log('🚀 ¡Secuencia de alerta procesada con Google Sheets con éxito!');
+      console.log('🚀 ¡Secuencia de alerta procesada con éxito!');
     }
 
     return res.status(200).json({ status: 'Webhook procesado correctamente' });
