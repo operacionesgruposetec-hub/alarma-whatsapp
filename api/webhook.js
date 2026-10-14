@@ -20,20 +20,18 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Ignored: Not a group message' });
       }
 
-      // Extraer datos del remitente
-      const rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.sender || '';
+      // Extraer de forma precisa el teléfono real ignorando el @lid si viene disponible en las propiedades de Evolution API
+      const keyParticipant = messageData?.key?.participant || '';
+      const dataParticipant = messageData?.participant || '';
+      const senderJid = messageData?.sender || '';
+      
+      // Buscar entre las distintas propiedades cuál contiene un número de teléfono real (@s.whatsapp.net) en lugar de @lid
+      let rawParticipant = [keyParticipant, dataParticipant, senderJid].find(p => p && p.includes('@s.whatsapp.net')) || keyParticipant || dataParticipant || senderJid;
+      
       const pushName = messageData?.pushName || 'Vecino';
-      
-      // Extracción estricta del número real: limpiamos todo carácter que no sea número
-      let cleanPhone = rawParticipant.replace(/\D/g, '');
-      
-      // Si el número es un identificador largo de WhatsApp (LID) que no contiene el número real,
-      // tomamos los últimos dígitos o dejamos el número limpio que arroja la plataforma.
-      // Para trabajar 100% con el número real de la persona:
-      if (cleanPhone.length > 10) {
-        // Opcional: si viene un LID muy largo, nos quedamos con la porción final o dejamos el string limpio
-        cleanPhone = cleanPhone.slice(-10); // Toma los últimos 10 dígitos (ej: código de país + número local)
-      }
+
+      // Limpiar para dejar únicamente los números puros (Ej: 50660301041)
+      let cleanPhone = rawParticipant.split('@')[0].split(':')[0].replace(/\D/g, '');
 
       const messageText = messageData?.message?.conversation || 
                           messageData?.message?.extendedTextMessage?.text || 
@@ -45,17 +43,16 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Omitted' });
       }
 
-      console.log(`🎯 Alerta en grupo. Remitente bruto: [${rawParticipant}] | Teléfono real extraído para búsqueda: [${cleanPhone}] -> Comando: [${cleanText}]`);
+      console.log(`🎯 Alerta recibida. Teléfono extraído para consulta: [${cleanPhone}] | Nombre WhatsApp: [${pushName}] -> Comando: [${cleanText}]`);
 
       // -----------------------------------------------------------------
-      // CONSULTA ESTRICTA A GOOGLE SHEETS USANDO EL NÚMERO REAL
+      // CONSULTA A GOOGLE SHEETS CON EL NÚMERO EXTRAÍDO
       // -----------------------------------------------------------------
       const sheetApiUrl = process.env.GOOGLE_SHEET_API_URL;
       let datosResidente = null;
 
       if (sheetApiUrl && cleanPhone) {
         try {
-          // Consultamos pasando el teléfono real extraído a Google Sheets
           const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(cleanPhone)}`;
           const response = await fetch(urlConsulta, { redirect: 'follow' });
           const rawText = await response.text();
@@ -69,18 +66,18 @@ export default async function handler(req, res) {
               longitud: parseFloat(data.longitud),
               foto: data.foto
             };
-            console.log('✅ Coincidencia exacta encontrada en Google Sheet para el número:', cleanPhone);
+            console.log('✅ Residente encontrado en Google Sheet:', datosResidente.nombre);
           } else {
-            console.log('⚠️ El número real [', cleanPhone, '] no está registrado en la Columna B de la hoja.');
+            console.log(`⚠️ El número [${cleanPhone}] no se encuentra en la Columna B de Google Sheets.`);
           }
         } catch (sheetError) {
           console.error('❌ Error consultando Google Sheet:', sheetError);
         }
       }
 
-      // Si el número real no está en la hoja, se detiene por completo (Sin datos ficticios)
+      // Si no coincide exactamente con la base de datos, se detiene la alerta
       if (!datosResidente) {
-        console.log('❌ Alerta rechazada: El número de teléfono no pertenece a ningun residente registrado.');
+        console.log(`❌ Alerta rechazada: El número [${cleanPhone}] no está registrado en la base de datos.`);
         return res.status(200).json({ status: 'Ignored: Phone number not found in database' });
       }
 
@@ -93,7 +90,7 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json'
       };
 
-      // 1. ENVIAR TEXTO DESCRIPTIVO CON LOS DATOS DE LA HOJA
+      // 1. ENVIAR TEXTO CON DATOS EXCLUSIVOS DE GOOGLE SHEETS
       const respuestaTexto = `👤 SR/SRA: ${datosResidente.nombre}\n` +
         `🏠 DOMICILIO: ${datosResidente.domicilio}\n` +
         `📅 FECHA Y HORA: ${new Date().toLocaleString()}\n\n` +
@@ -108,7 +105,7 @@ export default async function handler(req, res) {
         })
       });
 
-      // 2. ENVIAR FOTO DESDE LA BASE DE DATOS
+      // 2. ENVIAR FOTO DE LA HOJA DE CÁLCULO
       if (datosResidente.foto) {
         await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
           method: 'POST',
@@ -124,7 +121,7 @@ export default async function handler(req, res) {
         });
       }
 
-      // 3. ENVIAR UBICACIÓN GPS DESDE LA BASE DE DATOS
+      // 3. ENVIAR UBICACIÓN GPS DE LA HOJA DE CÁLCULO
       await fetch(`${evolutionUrl}/message/sendLocation/${instanceName}`, {
         method: 'POST',
         headers: headers,
@@ -137,7 +134,7 @@ export default async function handler(req, res) {
         })
       });
 
-      console.log('🚀 ¡Alerta procesada exitosamente con el número real de la base de datos!');
+      console.log('🚀 ¡Alerta enviada con éxito utilizando los datos del residente!');
     }
 
     return res.status(200).json({ status: 'Webhook procesado correctamente' });
