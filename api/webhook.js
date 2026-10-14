@@ -9,7 +9,7 @@ export default async function handler(req, res) {
     if (body.event === 'MESSAGES_UPSERT' || body.event === 'messages.upsert') {
       const messageData = body.data;
 
-      // 1. Obtener el ID del grupo donde se envió el mensaje
+      // 1. Obtener el ID del grupo
       const remoteJid = messageData?.key?.remoteJid || messageData?.remoteJid;
       const isGroup = remoteJid && remoteJid.endsWith('@g.us');
 
@@ -17,11 +17,9 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Ignored: Not a group message' });
       }
 
-      // 2. Extraer el teléfono REAL del participante
-      // Evolution API suele enviar el teléfono real en sender, participant o dentro de key.participant
+      // 2. Extraer el participante tal cual viene
       const rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.sender || '';
       
-      // Limpiamos el texto para dejar únicamente el número telefónico
       let cleanPhone = rawParticipant.split('@')[0].split(':')[0];
       if (cleanPhone && !cleanPhone.startsWith('+')) {
         cleanPhone = '+' + cleanPhone;
@@ -42,9 +40,15 @@ export default async function handler(req, res) {
       console.log(`🎯 Mensaje recibido en grupo [${remoteJid}] de [${cleanPhone}] (${pushName}) con comando: [${cleanText}]`);
 
       // -----------------------------------------------------------------
-      // DICCIONARIO DE RESIDENTES
+      // DICCIONARIO DE RESIDENTES (Usando el identificador exacto del log)
       // -----------------------------------------------------------------
       const residentesDB = {
+        "+103693412229282": {
+          nombre: "Ulises Martínez Pineda",
+          domicilio: "Casa Principal",
+          latitud: 9.856,
+          longitud: -83.914
+        },
         "+50660301041": {
           nombre: "Ulises Martínez Pineda",
           domicilio: "Casa Principal",
@@ -53,15 +57,15 @@ export default async function handler(req, res) {
         }
       };
 
-      // Buscar por número telefónico o fallback si no está registrado aún
+      // Búsqueda exacta del residente
       const datosResidente = residentesDB[cleanPhone] || {
-        nombre: `${pushName} (${cleanPhone})`,
-        domicilio: "Residencial (Dirección pendiente de registro)",
+        nombre: `Vecino Registrado (${cleanPhone})`,
+        domicilio: "Residencial General",
         latitud: 9.856,
         longitud: -83.914
       };
 
-      console.log('✅ ¡Alerta generada para:', datosResidente.nombre);
+      console.log('✅ ¡Alerta generada y asociada para:', datosResidente.nombre);
 
       const evolutionUrl = process.env.EVOLUTION_API_URL;
       const evolutionKey = process.env.EVOLUTION_API_KEY;
@@ -78,7 +82,7 @@ export default async function handler(req, res) {
         method: 'POST',
         headers: headers,
         body: JSON.stringify({
-          number: remoteJid, // Se envía siempre al ID del grupo (@g.us)
+          number: remoteJid,
           mediaMessage: {
             mediatype: "image",
             media: imagenUrl,
