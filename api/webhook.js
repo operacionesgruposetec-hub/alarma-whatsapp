@@ -33,40 +33,25 @@ export default async function handler(req, res) {
 
       const cleanText = messageText.trim().toUpperCase();
 
+      // FILTRO ESTRICTO: Solo M, S, I o P
       if (!['M', 'S', 'I', 'P'].includes(cleanText)) {
         return res.status(200).json({ status: 'Omitted' });
       }
 
-      // 🔍 INSPECCIÓN TOTAL: Imprimir todo el objeto messageData en los logs de Vercel para ver dónde viene tu número real
-      console.log("=== INSPECCIÓN DE MENSAJE WHATSAPP ===");
-      console.log(JSON.stringify(messageData, null, 2));
-      console.log("========================================");
+      // Obtener el participante crudo (incluso si viene con @lid)
+      const participant = messageData?.key?.participant || messageData?.participant || messageData?.author || '';
+      const rawDigits = participant.replace(/[^0-9]/g, '');
 
-      // Intentar extraer de propiedades comunes o de la estructura de Evolution
-      let rawPhone = '';
-      const participant = messageData?.key?.participant || messageData?.participant || '';
-      
-      // Si el participante tiene el número directo antes del @
-      if (participant && !participant.includes('@lid')) {
-        rawPhone = participant.split('@')[0].replace(/[^0-9]/g, '');
+      // Tomamos los últimos 8 dígitos del número (el teléfono local de Costa Rica) y le ponemos +506
+      let senderPhone = '';
+      if (rawDigits.length >= 8) {
+        const localNumber = rawDigits.slice(-8); // Los últimos 8 dígitos
+        senderPhone = '+506' + localNumber;
       } else {
-        // Si es @lid, buscamos si hay otro campo como pushName, sender, o extraemos de los datos del contacto si existen
-        rawPhone = messageData?.sender || messageData?.pushName || '';
+        senderPhone = '+' + rawDigits;
       }
 
-      // Fallback temporal para la prueba si el LID no trae el número
-      let senderPhone = rawPhone;
-      if (senderPhone.length === 8) {
-        senderPhone = '+506' + senderPhone;
-      } else if (!senderPhone.startsWith('+') && senderPhone.length > 8) {
-        senderPhone = '+' + senderPhone;
-      } else {
-        // Si no se pudo extraer del lid, usamos el número con el que tienes registrado tu Supabase para que veas que la consulta sí funciona
-        // (Esto lo ajustaremos en cuanto veamos el JSON completo en los logs)
-        senderPhone = '+50660301041'; 
-      }
-
-      console.log(`🎯 Buscando en Supabase el teléfono: ${senderPhone}`);
+      console.log(`🎯 Comando "${cleanText}" | Teléfono reconstruido para Supabase: ${senderPhone}`);
 
       // Consultar el residente en Supabase por su teléfono
       const { data: residente, error } = await supabase
