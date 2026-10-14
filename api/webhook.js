@@ -22,7 +22,7 @@ export default async function handler(req, res) {
 
       // Extraer datos del remitente y limpiar formato
       const rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.sender || '';
-      const pushName = messageData?.pushName || 'Vecino del Residencial';
+      const pushName = messageData?.pushName || 'Vecino';
       
       let cleanPhone = rawParticipant.split('@')[0].split(':')[0];
       cleanPhone = cleanPhone.replace(/[^0-9+]/g, '');
@@ -41,48 +41,43 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Omitted' });
       }
 
-      console.log(`🎯 Alerta recibida en grupo. Remitente bruto: [${rawParticipant}] | Tel extraído: [${cleanPhone}] | Nombre: [${pushName}] -> Comando: [${cleanText}]`);
+      console.log(`🎯 Alerta recibida en grupo. Remitente: [${cleanPhone}] | Comando: [${cleanText}]`);
 
       // -----------------------------------------------------------------
-      // CONSULTA DINÁMICA A GOOGLE SHEETS
+      // CONSULTA 100% ESTRICTA A GOOGLE SHEETS (Sin datos inventados)
       // -----------------------------------------------------------------
       const sheetApiUrl = process.env.GOOGLE_SHEET_API_URL;
       
-      let datosResidente = {
-        nombre: pushName !== 'Vecino del Residencial' ? pushName : `Vecino (${cleanPhone})`,
-        domicilio: "Residencial General",
-        latitud: 9.851886,
-        longitud: -83.945423,
-        foto: "https://images.unsplash.com/photo-1541872703-74c5e44368f9?q=80&w=1000&auto=format&fit=crop"
-      };
+      let datosResidente = null;
 
       if (sheetApiUrl) {
         try {
-          const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(cleanPhone)}&nombre=${encodeURIComponent(pushName)}`;
+          const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(cleanPhone)}`;
           const response = await fetch(urlConsulta, { redirect: 'follow' });
           const rawText = await response.text();
 
-          try {
-            const data = JSON.parse(rawText);
-            if (data && data.encontrado) {
-              datosResidente = {
-                nombre: data.nombre || datosResidente.nombre,
-                domicilio: data.domicilio || datosResidente.domicilio,
-                latitud: data.latitud || datosResidente.latitud,
-                longitud: data.longitud || datosResidente.longitud,
-                foto: (data.foto && data.foto.startsWith('http')) ? data.foto : datosResidente.foto
-              };
-              console.log('✅ Residente encontrado en Google Sheet:', datosResidente.nombre);
-            } else {
-              console.log('⚠️ No se encontró coincidencia directa, usando datos de respaldo.');
-            }
-          } catch (jsonErr) {
-            console.error('❌ La respuesta de Google Sheet no fue un JSON válido:', rawText.substring(0, 100));
+          const data = JSON.parse(rawText);
+          if (data && data.encontrado) {
+            datosResidente = {
+              nombre: data.nombre,
+              domicilio: data.domicilio,
+              latitud: parseFloat(data.latitud),
+              longitud: parseFloat(data.longitud),
+              foto: data.foto
+            };
+            console.log('✅ Residente encontrado en Google Sheet:', datosResidente.nombre);
+          } else {
+            console.log('⚠️ Número no registrado en la hoja de cálculo.');
           }
-
         } catch (sheetError) {
           console.error('❌ Error consultando Google Sheet:', sheetError);
         }
+      }
+
+      // Si no se encontró en la hoja, detenemos el envío para no mandar información falsa
+      if (!datosResidente) {
+        console.log('❌ Alerta ignorada: El remitente no está registrado en la base de datos.');
+        return res.status(200).json({ status: 'Ignored: Resident not found in database' });
       }
 
       const evolutionUrl = process.env.EVOLUTION_API_URL;
@@ -94,7 +89,7 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json'
       };
 
-      // 1. ENVIAR TEXTO DESCRIPTIVO
+      // 1. ENVIAR TEXTO DESCRIPTIVO CON DATOS REALES DE LA HOJA
       const respuestaTexto = `👤 SR/SRA: ${datosResidente.nombre}\n` +
         `🏠 DOMICILIO: ${datosResidente.domicilio}\n` +
         `📅 FECHA Y HORA: ${new Date().toLocaleString()}\n\n` +
@@ -109,21 +104,23 @@ export default async function handler(req, res) {
         })
       });
 
-      // 2. ENVIAR FOTO DE LA CASA
-      await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify({
-          number: remoteJid,
-          mediaMessage: {
-            mediatype: "image",
-            media: datosResidente.foto,
-            caption: `🔴 FOTO DE LA CASA - ALARMA VECINAL (${cleanText}) 🔴`
-          }
-        })
-      });
+      // 2. ENVIAR FOTO REAL DE LA BASE DE DATOS
+      if (datosResidente.foto) {
+        await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({
+            number: remoteJid,
+            mediaMessage: {
+              mediatype: "image",
+              media: datosResidente.foto,
+              caption: `🔴 FOTO DE LA CASA - ALARMA VECINAL (${cleanText}) 🔴`
+            }
+          })
+        });
+      }
 
-      // 3. ENVIAR UBICACIÓN GPS
+      // 3. ENVIAR UBICACIÓN GPS REAL DE LA BASE DE DATOS
       await fetch(`${evolutionUrl}/message/sendLocation/${instanceName}`, {
         method: 'POST',
         headers: headers,
@@ -136,7 +133,7 @@ export default async function handler(req, res) {
         })
       });
 
-      console.log('🚀 ¡Secuencia de alerta procesada con éxito!');
+      console.log('🚀 ¡Secuencia de alerta procesada con éxito con datos de la BD!');
     }
 
     return res.status(200).json({ status: 'Webhook procesado correctamente' });
