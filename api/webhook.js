@@ -1,7 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_ANON_KEY;
+// URL y Llave directas para evitar fallos de lectura en Vercel
+const supabaseUrl = 'https://iljhfqeqpiencvtztxy.supabase.co';
+const supabaseKey = process.env.SUPABASE_ANON_KEY; 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const evolutionUrl = process.env.EVOLUTION_API_URL;
@@ -26,7 +27,6 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Ignored: Not a group message' });
       }
 
-      // Extraer texto
       const messageText = messageData?.message?.conversation || 
                           messageData?.message?.extendedTextMessage?.text || 
                           messageData?.body || '';
@@ -37,16 +37,14 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Omitted' });
       }
 
-      // Número a buscar (probamos primero con el número exacto y un comodín o sin el + si fuera necesario)
       const targetPhone = '+50660301041';
       console.log(`🎯 Consultando en tabla residentes el teléfono: [${targetPhone}]`);
 
-      // Consultar el residente en Supabase y capturar el error detallado si lo hay
       const { data: residente, error } = await supabase
         .from('residentes')
         .select('*, residenciales(*)')
         .eq('teléfono', targetPhone)
-        .maybeSingle(); // Usamos maybeSingle para evitar excepciones si no hay registros exactos
+        .maybeSingle();
 
       if (error) {
         console.error('❌ Error devuelto por Supabase:', JSON.stringify(error));
@@ -55,11 +53,6 @@ export default async function handler(req, res) {
 
       if (!residente) {
         console.error(`❌ La consulta no arrojó ningún resultado para: [${targetPhone}]`);
-        
-        // Diagnóstico: vamos a listar brevemente lo que hay en la tabla para ver cómo guarda Supabase el formato
-        const { data: allResidents } = await supabase.from('residentes').select('nombre, teléfono').limit(5);
-        console.log('📋 Muestra de teléfonos guardados actualmente en Supabase:', JSON.stringify(allResidents));
-
         return res.status(200).json({ status: 'Residente no registrado' });
       }
 
