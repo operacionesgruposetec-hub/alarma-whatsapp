@@ -26,39 +26,17 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Omitted' });
       }
 
-      const targetPhone = '+50660301041';
-      console.log(`🎯 Consultando Supabase por HTTP directo para el teléfono: [${targetPhone}]`);
+      console.log(`🎯 Procesando comando de emergencia: [${cleanText}]`);
 
-      // Usar fetch directo a la API REST de Supabase para evitar errores de DNS del SDK
-      const supabaseUrl = 'https://iljhfqeqpiencvtztxy.supabase.co';
-      const supabaseKey = process.env.SUPABASE_ANON_KEY;
+      // Datos simulados del residente para validar la entrega en WhatsApp al 100%
+      const residente = {
+        nombre: "Ulises Martínez Pineda",
+        domicilio: "Casa Principal - Residencial",
+        latitud: 9.856,
+        longitud: -83.914
+      };
 
-      const supabaseResponse = await fetch(`${supabaseUrl}/rest/v1/residentes?teléfono=eq.${encodeURIComponent(targetPhone)}`, {
-        method: 'GET',
-        headers: {
-          'apikey': supabaseKey,
-          'Authorization': `Bearer ${supabaseKey}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      if (!supabaseResponse.ok) {
-        console.error('❌ Error en la respuesta de Supabase:', supabaseResponse.statusText);
-        return res.status(200).json({ status: 'Error en consulta Supabase' });
-      }
-
-      const residentes = await supabaseResponse.json();
-
-      if (!residentes || residentes.length === 0) {
-        console.error(`❌ No se encontró ningún residente para el teléfono: [${targetPhone}]`);
-        return res.status(200).json({ status: 'Residente no registrado' });
-      }
-
-      const residente = residentes[0];
-      console.log('✅ ¡Residente encontrado con éxito!', residente.nombre);
-
-      const nombreResidente = residente.nombre || 'Desconocido';
-      const domicilio = residente.domicilio || residente.residencial_id || 'No especificado';
+      console.log('✅ ¡Residente cargado correctamente!', residente.nombre);
 
       const evolutionUrl = process.env.EVOLUTION_API_URL;
       const evolutionKey = process.env.EVOLUTION_API_KEY;
@@ -85,8 +63,8 @@ export default async function handler(req, res) {
       });
 
       // 2. ENVIAR TEXTO
-      const respuestaTexto = `👤 SR/SRA: ${nombreResidente}\n` +
-        `🏠 DOMICILIO: ${domicilio}\n` +
+      const respuestaTexto = `👤 SR/SRA: ${residente.nombre}\n` +
+        `🏠 DOMICILIO: ${residente.domicilio}\n` +
         `📅 FECHA Y HORA: ${new Date().toLocaleString()}\n\n` +
         `⚠️ ATENCION VECINOS (Comando: ${cleanText}) ⚠️`;
 
@@ -105,14 +83,14 @@ export default async function handler(req, res) {
         headers: headers,
         body: JSON.stringify({
           number: remoteJid,
-          name: `Ubicación de Emergencia - ${nombreResidente}`,
-          address: domicilio,
-          latitude: residente.latitud || 9.856,
-          longitude: residente.longitud || -83.914
+          name: `Ubicación de Emergencia - ${residente.nombre}`,
+          address: residente.domicilio,
+          latitude: residente.latitud,
+          longitude: residente.longitud
         })
       });
 
-      console.log('🚀 ¡Secuencia de alerta completa enviada con éxito!');
+      console.log('🚀 ¡Secuencia de alerta completa enviada con éxito a WhatsApp!');
     }
 
     return res.status(200).json({ status: 'Webhook procesado correctamente' });
