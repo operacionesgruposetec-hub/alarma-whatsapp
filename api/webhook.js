@@ -20,7 +20,10 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Ignored: Not a group message' });
       }
 
+      // Extraer datos del remitente
       const rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.sender || '';
+      const pushName = messageData?.pushName || 'Vecino del Residencial';
+      
       let cleanPhone = rawParticipant.split('@')[0].split(':')[0];
       cleanPhone = cleanPhone.replace(/[^0-9+]/g, '');
       
@@ -28,7 +31,6 @@ export default async function handler(req, res) {
         cleanPhone = '+' + cleanPhone;
       }
 
-      const pushName = messageData?.pushName || 'Vecino del Residencial';
       const messageText = messageData?.message?.conversation || 
                           messageData?.message?.extendedTextMessage?.text || 
                           messageData?.body || '';
@@ -39,10 +41,10 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Omitted' });
       }
 
-      console.log(`🎯 Alerta recibida en grupo de [${cleanPhone}] (${pushName}) -> Comando: [${cleanText}]`);
+      console.log(`🎯 Alerta recibida en grupo. Remitente bruto: [${rawParticipant}] | Tel extraído: [${cleanPhone}] | Nombre: [${pushName}] -> Comando: [${cleanText}]`);
 
       // -----------------------------------------------------------------
-      // CONSULTA A GOOGLE SHEETS
+      // CONSULTA A GOOGLE SHEETS (Enviamos tanto el teléfono como el nombre por si acaso)
       // -----------------------------------------------------------------
       const sheetApiUrl = process.env.GOOGLE_SHEET_API_URL;
       
@@ -56,7 +58,8 @@ export default async function handler(req, res) {
 
       if (sheetApiUrl) {
         try {
-          const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(cleanPhone)}`;
+          // Consultamos pasando el teléfono y el pushName para que Apps Script tenga opciones de búsqueda
+          const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(cleanPhone)}&nombre=${encodeURIComponent(pushName)}`;
           const response = await fetch(urlConsulta, { redirect: 'follow' });
           const rawText = await response.text();
 
@@ -72,7 +75,7 @@ export default async function handler(req, res) {
               };
               console.log('✅ Residente encontrado en Google Sheet:', datosResidente.nombre);
             } else {
-              console.log('⚠️ Número no registrado en la hoja, usando datos por defecto.');
+              console.log('⚠️ No se encontró coincidencia directa, usando datos por defecto.');
             }
           } catch (jsonErr) {
             console.error('❌ La respuesta de Google Sheet no fue un JSON válido:', rawText.substring(0, 100));
@@ -143,4 +146,4 @@ export default async function handler(req, res) {
     console.error('Error general en el webhook:', error);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
-}0
+}
