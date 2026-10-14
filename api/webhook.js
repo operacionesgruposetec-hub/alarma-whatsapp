@@ -9,6 +9,7 @@ export default async function handler(req, res) {
     if (body.event === 'MESSAGES_UPSERT' || body.event === 'messages.upsert') {
       const messageData = body.data;
 
+      // 1. Obtener el ID del grupo donde se envió el mensaje
       const remoteJid = messageData?.key?.remoteJid || messageData?.remoteJid;
       const isGroup = remoteJid && remoteJid.endsWith('@g.us');
 
@@ -16,10 +17,17 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Ignored: Not a group message' });
       }
 
-      // Extraer número y nombre de perfil que envía el mensaje en WhatsApp
-      const senderJid = messageData?.key?.participant || messageData?.participant || remoteJid;
-      const senderPhone = '+' + senderJid.split('@')[0];
-      const pushName = messageData?.pushName || messageData?.messageContextInfo?.deviceListMetadata?.pushName || 'Vecino del Residencial';
+      // 2. Extraer el teléfono REAL del participante
+      // Evolution API suele enviar el teléfono real en sender, participant o dentro de key.participant
+      const rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.sender || '';
+      
+      // Limpiamos el texto para dejar únicamente el número telefónico
+      let cleanPhone = rawParticipant.split('@')[0].split(':')[0];
+      if (cleanPhone && !cleanPhone.startsWith('+')) {
+        cleanPhone = '+' + cleanPhone;
+      }
+
+      const pushName = messageData?.pushName || 'Vecino del Residencial';
 
       const messageText = messageData?.message?.conversation || 
                           messageData?.message?.extendedTextMessage?.text || 
@@ -31,10 +39,10 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Omitted' });
       }
 
-      console.log(`🎯 Mensaje recibido de [${senderPhone}] (${pushName}) con comando: [${cleanText}]`);
+      console.log(`🎯 Mensaje recibido en grupo [${remoteJid}] de [${cleanPhone}] (${pushName}) con comando: [${cleanText}]`);
 
       // -----------------------------------------------------------------
-      // AQUÍ IRÁS AGREGANDO A TUS VECINOS UNO A UNO CONFORME LOS REGISTRES
+      // DICCIONARIO DE RESIDENTES
       // -----------------------------------------------------------------
       const residentesDB = {
         "+50660301041": {
@@ -42,19 +50,12 @@ export default async function handler(req, res) {
           domicilio: "Casa Principal",
           latitud: 9.856,
           longitud: -83.914
-        },
-        // Ejemplo para cuando agregues al siguiente vecino:
-        // "+50688889999": {
-        //   nombre: "Juan Pérez",
-        //   domicilio: "Casa #15",
-        //   latitud: 9.857,
-        //   longitud: -83.915
-        // }
+        }
       };
 
-      // Si el número está en tu lista, usa tus datos. Si no, usa su nombre de WhatsApp de forma automática.
-      const datosResidente = residentesDB[senderPhone] || {
-        nombre: `${pushName} (${senderPhone})`,
+      // Buscar por número telefónico o fallback si no está registrado aún
+      const datosResidente = residentesDB[cleanPhone] || {
+        nombre: `${pushName} (${cleanPhone})`,
         domicilio: "Residencial (Dirección pendiente de registro)",
         latitud: 9.856,
         longitud: -83.914
@@ -71,13 +72,13 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json'
       };
 
-      // 1. ENVIAR IMAGEN DE ALERTA
+      // 1. ENVIAR IMAGEN DE ALERTA AL GRUPO
       const imagenUrl = "https://images.unsplash.com/photo-1541872703-74c5e44368f9?q=80&w=1000&auto=format&fit=crop";
       await fetch(`${evolutionUrl}/message/sendMedia/${evolutionInstance}`, {
         method: 'POST',
         headers: headers,
         body: JSON.stringify({
-          number: remoteJid,
+          number: remoteJid, // Se envía siempre al ID del grupo (@g.us)
           mediaMessage: {
             mediatype: "image",
             media: imagenUrl,
@@ -86,7 +87,7 @@ export default async function handler(req, res) {
         })
       });
 
-      // 2. ENVIAR TEXTO DESCRIPTIVO
+      // 2. ENVIAR TEXTO DESCRIPTIVO AL GRUPO
       const respuestaTexto = `👤 SR/SRA: ${datosResidente.nombre}\n` +
         `🏠 DOMICILIO: ${datosResidente.domicilio}\n` +
         `📅 FECHA Y HORA: ${new Date().toLocaleString()}\n\n` +
@@ -101,7 +102,7 @@ export default async function handler(req, res) {
         })
       });
 
-      // 3. ENVIAR UBICACIÓN GPS
+      // 3. ENVIAR UBICACIÓN GPS AL GRUPO
       await fetch(`${evolutionUrl}/message/sendLocation/${evolutionInstance}`, {
         method: 'POST',
         headers: headers,
@@ -114,7 +115,7 @@ export default async function handler(req, res) {
         })
       });
 
-      console.log('🚀 ¡Secuencia de alerta completa enviada con éxito al grupo!');
+      console.log('🚀 ¡Secuencia de alerta enviada con éxito al grupo!');
     }
 
     return res.status(200).json({ status: 'Webhook procesado correctamente' });
