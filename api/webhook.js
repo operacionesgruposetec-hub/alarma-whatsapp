@@ -32,7 +32,6 @@ export default async function handler(req, res) {
 
       let telefonoFinal = '';
 
-      // Extracción limpia del número o aplicación del mapeo de prueba para tu LID
       telefonoFinal = rawParticipant.split('@')[0].split(':')[0].replace(/\D/g, '');
 
       if (rawParticipant.includes('103693412229282') || telefonoFinal.length < 8) {
@@ -59,14 +58,17 @@ export default async function handler(req, res) {
           console.log(`📥 Respuesta cruda de Google Apps Script recibida:`, rawText);
 
           const data = JSON.parse(rawText);
-          if (data && (data.encontrado === true || data.encontrado === "true")) {
-            // Mapeo seguro con respaldos por si la celda viene vacía o con otra nomenclatura
+          
+          // Verificamos si la respuesta trae el objeto anidado 'residente' o viene plano
+          const fuenteResidente = data.residente || data;
+
+          if (data && (data.encontrado === true || data.encontrado === "true") && fuenteResidente) {
             datosResidente = {
-              nombre: data.nombre || data.Nombre || data.NAME || 'Vecino Registrado',
-              domicilio: data.domicilio || data.Domicilio || data.direccion || 'Residencia Registrada',
-              latitud: parseFloat(data.latitud || data.Latitud || 0),
-              longitud: parseFloat(data.longitud || data.Longitud || 0),
-              foto: data.foto || data.Foto || data.imagen || ''
+              nombre: fuenteResidente.nombre || fuenteResidente.Nombre || 'Vecino Registrado',
+              domicilio: fuenteResidente.domicilio || fuenteResidente.Domicilio || fuenteResidente.direccion || 'Residencia Registrada',
+              latitud: parseFloat(fuenteResidente.latitud || fuenteResidente.Latitud || 0),
+              longitud: parseFloat(fuenteResidente.longitud || fuenteResidente.Longitud || 0),
+              foto: fuenteResidente.foto || fuenteResidente.Foto || ''
             };
             console.log(`✅ ¡ÉXITO! Residente encontrado: [${datosResidente.nombre}] - [${datosResidente.domicilio}]`);
           } else {
@@ -123,18 +125,28 @@ export default async function handler(req, res) {
 
       // 2. ENVIAR FOTO DESDE LA HOJA
       if (datosResidente.foto && datosResidente.foto.trim() !== "") {
-        await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
-          method: 'POST',
-          headers: headers,
-          body: JSON.stringify({
-            number: remoteJid,
-            mediaMessage: {
-              mediatype: "image",
-              media: datosResidente.foto.trim(),
-              caption: `🔴 FOTO DE LA CASA - ALARMA VECINAL (${cleanText}) 🔴`
-            }
-          })
-        });
+        let directImageUrl = datosResidente.foto.trim();
+        const driveMatch = directImageUrl.match(/\/d\/([a-zA-Z0-9_-]+)/) || directImageUrl.match(/id=([a-zA-Z0-9_-]+)/);
+        if (driveMatch && driveMatch[1]) {
+          directImageUrl = `https://lh3.googleusercontent.com/d/${driveMatch[1]}`;
+        }
+
+        try {
+          await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({
+              number: remoteJid,
+              mediaMessage: {
+                mediatype: "image",
+                media: directImageUrl,
+                caption: `🔴 FOTO DE LA CASA - ALARMA VECINAL (${cleanText}) 🔴`
+              }
+            })
+          });
+        } catch (mediaErr) {
+          console.error("❌ Error enviando foto:", mediaErr.message);
+        }
       }
 
       // 3. ENVIAR UBICACIÓN GPS DESDE LA HOJA
