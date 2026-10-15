@@ -12,27 +12,29 @@ export default async function handler(req, res) {
     const remoteJid = body?.data?.key?.remoteJid || body?.data?.sender || '';
     const senderPn = body?.data?.pushName || 'Vecino';
     
-    // 2. Extracción estricta para evitar y BLOQUEAR el número 'lid'
-    // Verificamos de dónde viene el emisor real
     let rawParticipant = body?.data?.key?.participant || body?.data?.participant || body?.data?.sender || remoteJid;
 
-    // SI EL IDENTIFICADOR TRAE '@lid' O ES UN IDENTIFICADOR INTERNO DE WHATSAPP, LO DESCARTAMOS
-    if (rawParticipant.includes('@lid') || rawParticipant.includes('lid')) {
-      console.warn(`⚠️ Se detectó un identificador LID de WhatsApp (${rawParticipant}). Omitiéndolo para buscar el número real...`);
-      // Forzamos buscar en el sender o en otro campo alternativo si está disponible, 
-      // o limpiamos para asegurar que no se use el lid.
-      rawParticipant = body?.data?.sender || '';
-    }
-
-    // Limpieza profunda del número de teléfono para quedarnos solo con los dígitos reales
+    // Limpieza de extensión
     let telefonoRemitente = rawParticipant.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
 
-    // ADICIONAL: Si por alguna razón el teléfono resultante sigue siendo el LID (suele ser un número largo distinto a tu celular),
-    // puedes poner aquí una validación o asegurarte de que tome el número correcto de tu chip.
-    // Si tu número real tiene una cantidad específica de dígitos (ej: 8 dígitos en Costa Rica más código de país),
-    // filtramos para asegurarnos de que la búsqueda se haga estrictamente con el número de teléfono físico.
-    
-    console.log(`📱 Chat: ${remoteJid} | Número real depurado para comparación: ${telefonoRemitente}`);
+    // =========================================================================
+    // TRADUCCIÓN DIRECTA DEL LID: 
+    // Si Evolution API manda el LID interno de WhatsApp, lo mapeamos a tu número real 
+    // con el que estás registrado en la hoja de Google Sheets.
+    // (Puedes cambiar '103693412229282' por tu número de teléfono real del chip).
+    // =========================================================================
+    const MAPEO_LIDS_A_TELEFONOS = {
+      '103693412229282': '50688888888' // <-- REEMPLAZA '50688888888' CON TU NÚMERO REAL EXACTO DE LA HOJA
+    };
+
+    if (telefonoRemitente.length > 12 || rawParticipant.includes('lid') || MAPEO_LIDS_A_TELEFONOS[telefonoRemitente]) {
+      if (MAPEO_LIDS_A_TELEFONOS[telefonoRemitente]) {
+        telefonoRemitente = MAPEO_LIDS_A_TELEFONOS[telefonoRemitente];
+        console.log(`🔄 LID traducido exitosamente a número real: ${telefonoRemitente}`);
+      }
+    }
+
+    console.log(`📱 Chat: ${remoteJid} | Teléfono final para cotejar con Google Sheets: ${telefonoRemitente}`);
 
     const messageText = body?.data?.message?.conversation || 
                         body?.data?.message?.extendedTextMessage?.text || '';
@@ -42,13 +44,9 @@ export default async function handler(req, res) {
 
     let datosResidente = null;
 
-    // Validamos si el mensaje es uno de los comandos de alarma y tenemos un número válido
-    if (comandosValidos.includes(cleanText)) {
+    if (comandosValidos.includes(cleanText) && telefonoRemitente !== '') {
       console.log(`🚨 Comando de alarma [${cleanText}] detectado. Cotejando número real: ${telefonoRemitente}`);
 
-      // ==========================================
-      // DISPARAR EL HARDWARE DE TUYA SMART & GOOGLE SHEETS
-      // ==========================================
       try {
         const resultadoTuya = await ejecutarAlarmaVecinal(telefonoRemitente, cleanText);
         if (resultadoTuya.success) {
@@ -63,9 +61,6 @@ export default async function handler(req, res) {
         console.error("❌ Error crítico ejecutando Tuya Service:", tuyaErr.message);
       }
 
-      // ==========================================
-      // LÓGICA DE WHATSAPP (TEXTO Y FOTO)
-      // ==========================================
       const optionsTime = { 
         timeZone: 'America/Costa_Rica', 
         year: 'numeric', 
@@ -102,7 +97,6 @@ export default async function handler(req, res) {
         })
       });
 
-      // Enviar foto desde la hoja
       if (datosResidente && datosResidente.foto && datosResidente.foto.trim() !== "") {
         let directImageUrl = datosResidente.foto.trim();
 
