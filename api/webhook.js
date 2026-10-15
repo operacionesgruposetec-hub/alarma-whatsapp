@@ -148,7 +148,7 @@ export default async function handler(req, res) {
         })
       });
 
-      // 2. ENVIAR FOTO CON CONVERSIÓN AUTOMÁTICA DE GOOGLE DRIVE
+      // 2. ENVIAR FOTO CON MANEJO ROBUSTO PARA EVOLUTION API
       if (datosResidente.foto && datosResidente.foto.trim() !== "") {
         let directImageUrl = datosResidente.foto.trim();
         
@@ -158,21 +158,27 @@ export default async function handler(req, res) {
           directImageUrl = `https://lh3.googleusercontent.com/d/${driveFileId}`;
         }
 
+        console.log(`🖼️ Intentando enviar foto desde URL: ${directImageUrl}`);
+
         try {
-          await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
+          const mediaPayload = {
+            number: remoteJid,
+            mediatype: "image",
+            media: directImageUrl,
+            caption: `${tituloAlerta}\n🏠 Domicilio: ${datosResidente.domicilio}\n👤 Propietario: ${datosResidente.nombre}`
+          };
+
+          const mediaResponse = await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
             method: 'POST',
             headers: headers,
-            body: JSON.stringify({
-              number: remoteJid,
-              mediaMessage: {
-                mediatype: "image",
-                media: directImageUrl,
-                caption: `${tituloAlerta} - ${datosResidente.nombre} (${datosResidente.domicilio})`
-              }
-            })
+            body: JSON.stringify(mediaPayload)
           });
+
+          const mediaResult = await mediaResponse.text();
+          console.log(`📥 Respuesta de Evolution API al enviar foto:`, mediaResult);
+
         } catch (mediaErr) {
-          console.error("❌ Error enviando foto:", mediaErr.message);
+          console.error("❌ Error enviando foto a Evolution API:", mediaErr.message);
         }
       }
 
@@ -191,13 +197,13 @@ export default async function handler(req, res) {
         });
       }
 
-      console.log('🎉 ¡SECUENCIA DE ALARMA COMPLETADA CON ENCABEZADO DINÁMICO!');
+      console.log('🎉 ¡SECUENCIA DE ALARMA COMPLETADA CON ÉXITO!');
     }
 
     return res.status(200).json({ status: 'Webhook procesado correctamente' });
 
   } catch (error) {
     console.error('❌ Error crítico general:', error);
-    return res.status(500).json({ error: 'Error interno del servidor' });
+    return res.status(500).json({ error: error.message });
   }
 }
