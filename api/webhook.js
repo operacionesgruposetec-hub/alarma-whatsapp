@@ -30,16 +30,19 @@ export default async function handler(req, res) {
 
       console.log(`🎯 Mensaje recibido en grupo. Remitente bruto: [${rawParticipant}] -> Comando: [${cleanText}]`);
 
+      // =========================================================================
+      // EXTRACCIÓN DINÁMICA PURA (SIN NÚMEROS FIJOS NI PARCHES DE PRUEBA)
+      // =========================================================================
       let telefonoFinal = '';
-
-      telefonoFinal = rawParticipant.split('@')[0].split(':')[0].replace(/\D/g, '');
-
-      if (rawParticipant.includes('103693412229282') || telefonoFinal.length < 8) {
-        telefonoFinal = "50660301041";
-        console.log(`💡 Teléfono real mapeado para la consulta: [${telefonoFinal}]`);
+      
+      // Si el participante contiene '@lid', mandamos el identificador completo o los dígitos limpios
+      if (rawParticipant.includes('@lid')) {
+        telefonoFinal = rawParticipant.split('@')[0].split(':')[0].trim();
+      } else {
+        telefonoFinal = rawParticipant.split('@')[0].split(':')[0].replace(/\D/g, '');
       }
 
-      console.log(`📊 Consultando Google Sheets con el número real: [${telefonoFinal}]`);
+      console.log(`📊 Consultando Google Sheets con el identificador del residente: [${telefonoFinal}]`);
 
       const sheetApiUrl = process.env.GOOGLE_SHEET_API_URL;
       let datosResidente = null;
@@ -70,7 +73,7 @@ export default async function handler(req, res) {
             };
             console.log(`✅ ¡ÉXITO! Residente encontrado: [${datosResidente.nombre}] - [${datosResidente.domicilio}]`);
           } else {
-            console.log(`⚠️ La hoja respondió pero el número no hizo match o devolvió:`, rawText);
+            console.log(`⚠️ La hoja respondió pero el identificador no hizo match o devolvió:`, rawText);
           }
         } catch (sheetError) {
           console.error(`❌ Error crítico consultando Google Sheet:`, sheetError.message);
@@ -78,7 +81,7 @@ export default async function handler(req, res) {
       }
 
       if (!datosResidente) {
-        console.log(`❌ Alerta detenida: El número no fue autorizado por la hoja.`);
+        console.log(`❌ Alerta detenida: El identificador [${telefonoFinal}] no fue autorizado por la hoja.`);
         return res.status(200).json({ status: 'Ignored: Not registered' });
       }
 
@@ -86,7 +89,7 @@ export default async function handler(req, res) {
       // DISPARAR HARDWARE TUYA CLOUD (SIRENA)
       // ==========================================
       try {
-        console.log(`🚨 Ejecutando Tuya Service para el número: [${telefonoFinal}] con comando [${cleanText}]`);
+        console.log(`🚨 Ejecutando Tuya Service para el residente: [${telefonoFinal}] con comando [${cleanText}]`);
         const resultadoTuya = await ejecutarAlarmaVecinal(telefonoFinal, cleanText);
         if (resultadoTuya.success) {
           console.log(`✅ Tuya Cloud ejecutado con éxito: ${resultadoTuya.message}`);
@@ -133,13 +136,12 @@ export default async function handler(req, res) {
         tituloAlerta = '🆘 BOTÓN / ALERTA DE PÁNICO 🆘';
       }
 
-      // Estructura del bloque de información que irá como pie de foto y texto principal
       const informacionAlerta = `${tituloAlerta}\n\n` +
         `👤 SR/SRA: ${datosResidente.nombre}\n` +
         `🏠 DOMICILIO: ${datosResidente.domicilio}\n` +
         `📅 FECHA Y HORA: ${fechaHoraCR}`;
 
-      // 1. SI TIENE FOTO: ENVIAMOS LA FOTO CON LA INFORMACIÓN COMO PIE DE FOTO (CAPTION)
+      // 1. ENVIAR FOTO CON INFORMACIÓN COMO PIE DE FOTO
       if (datosResidente.foto && datosResidente.foto.trim() !== "") {
         let directImageUrl = datosResidente.foto.trim();
         
@@ -164,7 +166,6 @@ export default async function handler(req, res) {
           });
         } catch (mediaErr) {
           console.error("❌ Error enviando foto con caption:", mediaErr.message);
-          // Fallback: Si por algo falla la foto, enviamos el texto plano para que la alerta nunca se pierda
           await fetch(`${evolutionUrl}/message/sendText/${instanceName}`, {
             method: 'POST',
             headers: headers,
@@ -172,7 +173,6 @@ export default async function handler(req, res) {
           });
         }
       } else {
-        // Si no tiene foto registrada, enviamos solo el texto normal
         await fetch(`${evolutionUrl}/message/sendText/${instanceName}`, {
           method: 'POST',
           headers: headers,
@@ -195,7 +195,7 @@ export default async function handler(req, res) {
         });
       }
 
-      console.log('🎉 ¡SECUENCIA DE ALARMA CON FOTO Y PIE DE PÁGINA COMPLETADA!');
+      console.log('🎉 ¡SECUENCIA DE ALARMA DINÁMICA COMPLETADA!');
     }
 
     return res.status(200).json({ status: 'Webhook procesado correctamente' });
