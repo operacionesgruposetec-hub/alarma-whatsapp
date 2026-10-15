@@ -7,26 +7,33 @@ export default async function handler(req, res) {
 
   try {
     const body = req.body || {};
+    
+    // 1. Identificar el chat donde se responderá (si es grupo, se responde al grupo; si es privado, al chat)
     const remoteJid = body?.data?.key?.remoteJid || body?.data?.sender || '';
+    
+    // 2. Extraer el número real del emisor (incluso si está dentro de un grupo)
+    // Evolution API suele enviar el emisor real del grupo en key.participant o participant
+    const rawParticipant = body?.data?.key?.participant || body?.data?.participant || remoteJid;
+    const telefonoRemitente = rawParticipant.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
+
     const senderPn = body?.data?.pushName || 'Vecino';
     
-    const telefonoRemitente = remoteJid.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
     const messageText = body?.data?.message?.conversation || body?.data?.message?.extendedTextMessage?.text || '';
     const cleanText = messageText.trim().toUpperCase();
     const comandosValidos = ['M', 'S', 'I', 'P'];
 
-    if (comandosValidos.includes(cleanText)) {
-      console.log(`🚨 Comando de alarma [${cleanText}] detectado de: ${telefonoRemitente}`);
+    console.log(`📱 Chat/Grupo (remoteJid): ${remoteJid} | Emisor real extraído: ${telefonoRemitente} | Comando: ${cleanText}`);
 
+    if (comandosValidos.includes(cleanText)) {
       let datosResidente = null;
       try {
         const resultadoTuya = await ejecutarAlarmaVecinal(telefonoRemitente, cleanText);
         
         if (resultadoTuya.success && resultadoTuya.datosResidente) {
           datosResidente = resultadoTuya.datosResidente;
-          console.log(`✅ Datos de residente cargados para: ${datosResidente.nombre}`);
+          console.log(`✅ Residente encontrado: ${datosResidente.nombre}`);
         } else {
-          console.warn(`⚠️ Advertencia: ${resultadoTuya.error || 'No se pudieron obtener datos del residente'}`);
+          console.warn(`⚠️ No se encontró el residente con el teléfono: ${telefonoRemitente}`);
         }
       } catch (tuyaErr) {
         console.error("❌ Error ejecutando servicio:", tuyaErr.message);
@@ -50,7 +57,7 @@ export default async function handler(req, res) {
       const respuestaTexto = `👤 SR/SRA: ${nombreResidente}\n` +
         `🏠 DOMICILIO: ${domicilioResidente}\n` +
         `📅 FECHA Y HORA: ${fechaHoraCR}\n\n` +
-        `⚠️ ATENCION VECINOS (Comando: ${cleanText}) ⚠️`;
+        `⚠️ ATENCION VECINOS (ALERTA: ${cleanText}) ⚠️`;
 
       const evolutionUrl = process.env.EVOLUTION_API_URL;
       const instanceName = process.env.EVOLUTION_INSTANCE;
@@ -59,7 +66,7 @@ export default async function handler(req, res) {
         'apikey': process.env.EVOLUTION_API_KEY
       };
 
-      // Enviar mensaje de texto por WhatsApp
+      // Nota: Usamos remoteJid para que la respuesta y la foto lleguen al grupo donde se mandó el comando
       await fetch(`${evolutionUrl}/message/sendText/${instanceName}`, {
         method: 'POST',
         headers: headers,
@@ -69,7 +76,7 @@ export default async function handler(req, res) {
         })
       });
 
-      // Enviar foto si el residente tiene una registrada
+      // Enviar foto al grupo si el residente tiene una registrada
       if (datosResidente?.foto && datosResidente.foto.trim() !== "") {
         let directImageUrl = datosResidente.foto.trim();
 
