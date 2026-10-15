@@ -58,8 +58,6 @@ export default async function handler(req, res) {
           console.log(`📥 Respuesta cruda de Google Apps Script recibida:`, rawText);
 
           const data = JSON.parse(rawText);
-          
-          // Verificamos si la respuesta trae el objeto anidado 'residente' o viene plano
           const fuenteResidente = data.residente || data;
 
           if (data && (data.encontrado === true || data.encontrado === "true") && fuenteResidente) {
@@ -108,10 +106,23 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json'
       };
 
-      // 1. ENVIAR TEXTO CON LOS DATOS REALES DE LA HOJA
+      // Hora exacta de Costa Rica
+      const optionsTime = { 
+        timeZone: 'America/Costa_Rica', 
+        year: 'numeric', 
+        month: '2-digit', 
+        day: '2-digit', 
+        hour: '2-digit', 
+        minute: '2-digit', 
+        second: '2-digit', 
+        hour12: true 
+      };
+      const fechaHoraCR = new Intl.DateTimeFormat('es-CR', optionsTime).format(new Date());
+
+      // 1. ENVIAR TEXTO CON HORA LOCAL DE COSTA RICA
       const respuestaTexto = `👤 SR/SRA: ${datosResidente.nombre}\n` +
         `🏠 DOMICILIO: ${datosResidente.domicilio}\n` +
-        `📅 FECHA Y HORA: ${new Date().toLocaleString()}\n\n` +
+        `📅 FECHA Y HORA: ${fechaHoraCR}\n\n` +
         `⚠️ ATENCION VECINOS (Comando: ${cleanText}) ⚠️`;
 
       await fetch(`${evolutionUrl}/message/sendText/${instanceName}`, {
@@ -123,13 +134,18 @@ export default async function handler(req, res) {
         })
       });
 
-      // 2. ENVIAR FOTO DESDE LA HOJA
+      // 2. ENVIAR FOTO CON CONVERSIÓN AUTOMÁTICA DE GOOGLE DRIVE
       if (datosResidente.foto && datosResidente.foto.trim() !== "") {
         let directImageUrl = datosResidente.foto.trim();
+        
+        // Transformar enlace normal de Google Drive al formato de visualización directa si aplica
         const driveMatch = directImageUrl.match(/\/d\/([a-zA-Z0-9_-]+)/) || directImageUrl.match(/id=([a-zA-Z0-9_-]+)/);
         if (driveMatch && driveMatch[1]) {
-          directImageUrl = `https://lh3.googleusercontent.com/d/${driveMatch[1]}`;
+          const driveFileId = driveMatch[1];
+          directImageUrl = `https://lh3.googleusercontent.com/d/${driveFileId}`;
         }
+
+        console.log(`🖼️ URL de imagen procesada para enviar: ${directImageUrl}`);
 
         try {
           await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
@@ -164,7 +180,7 @@ export default async function handler(req, res) {
         });
       }
 
-      console.log('🎉 ¡SECUENCIA DE ALARMA COMPLETADA! El bot ha respondido con los datos correctos.');
+      console.log('🎉 ¡SECUENCIA DE ALARMA COMPLETADA CON HORA Y FOTO!');
     }
 
     return res.status(200).json({ status: 'Webhook procesado correctamente' });
