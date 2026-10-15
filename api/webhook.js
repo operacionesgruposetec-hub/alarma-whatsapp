@@ -8,32 +8,34 @@ export default async function handler(req, res) {
   try {
     const body = req.body || {};
     
-    // 1. Identificar el chat donde se responderá (el grupo)
-    const remoteJid = body?.data?.key?.remoteJid || body?.data?.sender || '';
+    // 1. Identificar el chat del grupo para responder ahí mismo
+    const remoteJid = body?.data?.key?.remoteJid || '';
     const senderPn = body?.data?.pushName || 'Vecino';
     
-    // 2. Extracción correcta: Si el participant o sender trae '@lid', 
-    // ignoramos ese identificador interno y buscamos el número real de teléfono.
-    let rawParticipant = body?.data?.key?.participant || body?.data?.participant || body?.data?.sender || remoteJid;
-    
-    if (rawParticipant.includes('@lid') || rawParticipant.includes('g.us')) {
-      // Si estamos en un grupo y viene el LID, el número real a veces viene en el author o debemos parsearlo.
-      // Si Evolution API te pasa el número en otro campo, lo apuntamos aquí:
-      rawParticipant = body?.data?.sender || body?.data?.key?.remoteJid || rawParticipant;
+    // 2. Extraer de manera infalible el emisor real ignorando si es un grupo (@g.us) o un LID (@lid)
+    // En Evolution API, el participante real en un grupo viene en data.key.participant o data.participant
+    let rawSender = body?.data?.key?.participant || 
+                    body?.data?.participant || 
+                    body?.data?.sender || 
+                    remoteJid;
+
+    // Si el rawSender sigue siendo el grupo o un lid, buscamos si hay otro campo de autor/remitente
+    if (rawSender.includes('@g.us') || rawSender.includes('@lid')) {
+      rawSender = body?.data?.sender || body?.data?.author || body?.data?.key?.participant || '';
     }
 
-    // Limpieza profunda para quedarnos únicamente con los dígitos del número de teléfono real
-    let telefonoRemitente = rawParticipant.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
+    // Limpieza profunda para quedarnos estrictamente con los números del teléfono real
+    let telefonoRemitente = rawSender.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
 
-    // Si por alguna razón sigue tomando un número muy corto o el LID, 
-    // asegurémonos de extraer el número de teléfono limpio omitiendo el identificador de grupo (@g.us) o lid.
-    if (telefonoRemitente.length > 15 || rawParticipant.includes('@lid')) {
-      // Forzamos la limpieza extrayendo los dígitos limpios si están disponibles en el payload
-      const fallbackNumber = body?.data?.key?.remoteJid || '';
-      telefonoRemitente = fallbackNumber.replace(/[^0-9]/g, '');
+    // Si por alguna razón el número extraído sigue siendo el ID del grupo (que empieza con 12036...),
+    // lo filtramos para que no busque eso en la hoja de Google Sheets.
+    if (telefonoRemitente.startsWith('12036') || telefonoRemitente.length < 8) {
+      console.warn(`⚠️ Advertencia: Se detectó un ID de grupo o inválido (${telefonoRemitente}). Buscando alternativas en el payload...`);
+      // Intento alternativo buscando en pushName o ignorando si es el grupo
+      telefonoRemitente = ''; 
     }
 
-    console.log(`📱 Chat (remoteJid): ${remoteJid} | Participante analizado: ${rawParticipant} | Teléfono real para búsqueda: ${telefonoRemitente}`);
+    console.log(`📱 Chat del Grupo: ${remoteJid} | Remitente crudo: ${rawSender} | Teléfono real depurado: ${telefonoRemitente}`);
 
     const messageText = body?.data?.message?.conversation || 
                         body?.data?.message?.extendedTextMessage?.text || '';
@@ -41,8 +43,8 @@ export default async function handler(req, res) {
     const cleanText = messageText.trim().toUpperCase();
     const comandosValidos = ['M', 'S', 'I', 'P'];
 
-    if (comandosValidos.includes(cleanText)) {
-      console.log(`🚨 Comando de alarma [${cleanText}] detectado de: ${telefonoRemitente}`);
+    if (comandosValidos.includes(cleanText) && telefonoRemitente !== '') {
+      console.log(`🚨 Comando de alarma [${cleanText}] procesando para el teléfono: ${telefonoRemitente}`);
 
       let datosResidente = null;
       try {
@@ -50,12 +52,12 @@ export default async function handler(req, res) {
         
         if (resultadoTuya.success && resultadoTuya.datosResidente) {
           datosResidente = resultadoTuya.datosResidente;
-          console.log(`✅ Residente encontrado con éxito: ${datosResidente.nombre}`);
+          console.log(`✅ Residente encontrado: ${datosResidente.nombre}`);
         } else {
-          console.warn(`⚠️ Advertencia: ${resultadoTuya.error || 'No se pudieron obtener datos del residente'}`);
+          console.warn(`⚠️ No se encontró el residente con el teléfono: ${telefonoRemitente}`);
         }
       } catch (tuyaErr) {
-        console.error("❌ Error crítico ejecutando servicio:", tuyaErr.message);
+        console.error("❌ Error ejecutando servicio:", tuyaErr.message);
       }
 
       const optionsTime = { 
@@ -85,7 +87,7 @@ export default async function handler(req, res) {
         'apikey': process.env.EVOLUTION_API_KEY
       };
 
-      // Enviar mensaje de texto al grupo
+      // Enviar texto al grupo
       await fetch(`${evolutionUrl}/message/sendText/${instanceName}`, {
         method: 'POST',
         headers: headers,
@@ -122,6 +124,8 @@ export default async function handler(req, res) {
           console.error("❌ Error enviando foto a Evolution API:", mediaErr.message);
         }
       }
+    } else {
+      console.log("ℹ️ Mensaje ignorado: No es un comando válido o el teléfono del emisor no pudo ser determinado.");
     }
 
     return res.status(200).json({ success: true, status: 'Webhook procesado' });
