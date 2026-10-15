@@ -16,8 +16,6 @@ export default async function handler(req, res) {
       }
 
       const remoteJid = messageData?.key?.remoteJid || messageData?.remoteJid;
-      const isGroup = remoteJid && remoteJid.endsWith('@g.us');
-
       const rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.sender || '';
       
       const messageText = messageData?.message?.conversation || 
@@ -52,7 +50,6 @@ export default async function handler(req, res) {
           const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(telefonoFinal)}`;
           console.log(`🌐 URL de consulta generada: ${urlConsulta}`);
           
-          // FORZAMOS A SEGUIR LA REDIRECCIÓN DE GOOGLE APPS SCRIPT
           const response = await fetch(urlConsulta, { 
             method: 'GET', 
             redirect: 'follow' 
@@ -62,15 +59,16 @@ export default async function handler(req, res) {
           console.log(`📥 Respuesta cruda de Google Apps Script recibida:`, rawText);
 
           const data = JSON.parse(rawText);
-          if (data && data.encontrado) {
+          if (data && (data.encontrado === true || data.encontrado === "true")) {
+            // Mapeo seguro con respaldos por si la celda viene vacía o con otra nomenclatura
             datosResidente = {
-              nombre: data.nombre,
-              domicilio: data.domicilio,
-              latitud: parseFloat(data.latitud),
-              longitud: parseFloat(data.longitud),
-              foto: data.foto
+              nombre: data.nombre || data.Nombre || data.NAME || 'Vecino Registrado',
+              domicilio: data.domicilio || data.Domicilio || data.direccion || 'Residencia Registrada',
+              latitud: parseFloat(data.latitud || data.Latitud || 0),
+              longitud: parseFloat(data.longitud || data.Longitud || 0),
+              foto: data.foto || data.Foto || data.imagen || ''
             };
-            console.log(`✅ ¡ÉXITO! Residente encontrado: [${datosResidente.nombre}]`);
+            console.log(`✅ ¡ÉXITO! Residente encontrado: [${datosResidente.nombre}] - [${datosResidente.domicilio}]`);
           } else {
             console.log(`⚠️ La hoja respondió pero el número no hizo match o devolvió:`, rawText);
           }
@@ -108,7 +106,7 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json'
       };
 
-      // 1. ENVIAR TEXTO CON LOS DATOS DE LA HOJA
+      // 1. ENVIAR TEXTO CON LOS DATOS REALES DE LA HOJA
       const respuestaTexto = `👤 SR/SRA: ${datosResidente.nombre}\n` +
         `🏠 DOMICILIO: ${datosResidente.domicilio}\n` +
         `📅 FECHA Y HORA: ${new Date().toLocaleString()}\n\n` +
@@ -124,7 +122,7 @@ export default async function handler(req, res) {
       });
 
       // 2. ENVIAR FOTO DESDE LA HOJA
-      if (datosResidente.foto) {
+      if (datosResidente.foto && datosResidente.foto.trim() !== "") {
         await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
           method: 'POST',
           headers: headers,
@@ -132,7 +130,7 @@ export default async function handler(req, res) {
             number: remoteJid,
             mediaMessage: {
               mediatype: "image",
-              media: datosResidente.foto,
+              media: datosResidente.foto.trim(),
               caption: `🔴 FOTO DE LA CASA - ALARMA VECINAL (${cleanText}) 🔴`
             }
           })
@@ -154,7 +152,7 @@ export default async function handler(req, res) {
         });
       }
 
-      console.log('🎉 ¡SECUENCIA DE ALARMA COMPLETADA! El bot ha respondido en el grupo y accionado Tuya.');
+      console.log('🎉 ¡SECUENCIA DE ALARMA COMPLETADA! El bot ha respondido con los datos correctos.');
     }
 
     return res.status(200).json({ status: 'Webhook procesado correctamente' });
