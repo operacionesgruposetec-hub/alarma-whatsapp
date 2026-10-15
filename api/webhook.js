@@ -12,20 +12,55 @@ export default async function handler(req, res) {
     const remoteJid = body?.data?.key?.remoteJid || body?.data?.sender || '';
     const senderPn = body?.data?.pushName || 'Vecino';
     
-    // 2. Extracción dinámica y limpia: 
-    // Evaluamos si el payload trae un número real en el sender o si usa el participant con lid.
-    // Tomamos el campo que contenga el identificador disponible de forma totalmente genérica.
-    let rawParticipant = body?.data?.sender || 
-                         body?.data?.key?.participant || 
-                         body?.data?.participant || 
-                         remoteJid;
+    // 2. Extraer el identificador crudo del remitente
+    let rawParticipant = body?.data?.key?.participant || body?.data?.participant || body?.data?.sender || remoteJid;
 
-    // Si el identificador contiene '@lid', extraemos los dígitos limpios del LID 
-    // para enviárselos al Apps Script de Google Sheets de forma estandarizada, 
-    // permitiendo que tu hoja maneje la equivalencia sin que el código tenga números fijos.
-    const telefonoRemitente = rawParticipant.replace('@s.whatsapp.net', '').replace('@lid', '').replace(/[^0-9]/g, '');
+    let telefonoRemitente = rawParticipant.replace('@s.whatsapp.net', '').replace('@lid', '').replace(/[^0-9]/g, '');
 
-    console.log(`📱 Chat: ${remoteJid} | ID/Teléfono dinámico procesado para Google Sheets: ${telefonoRemitente}`);
+    const evolutionUrl = process.env.EVOLUTION_API_URL;
+    const instanceName = process.env.EVOLUTION_INSTANCE_NAME;
+    const evolutionApiKey = process.env.EVOLUTION_API_KEY;
+
+    const headers = {
+      'Content-Type': 'application/json',
+      'apikey': evolutionApiKey
+    };
+
+    // 3. CONSULTA DINÁMICA AL API SI ES UN CÓDIGO LID:
+    // Si el identificador contiene '@lid' o es un ID interno largo, consultamos 
+    // a la API de Evolution de forma automática para obtener el número real del chip.
+    if (rawParticipant.includes('lid') || telefonoRemitente.length > 12) {
+      console.log(`🔍 Detectado identificador LID (${rawParticipant}). Consultando Evolution API para obtener el número real...`);
+      
+      try {
+        // Endpoint estándar de Evolution API para buscar contacto o perfil
+        const contactResponse = await fetch(`${evolutionUrl}/chat/findContact/${instanceName}`, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({
+            where: {
+              id: rawParticipant
+            }
+          })
+        });
+
+        if (contactResponse.ok) {
+          const contactData = await contactResponse.json();
+          // Intentamos extraer el número real devuelto por la API
+          const realNumber = contactData?.number || contactData?.id || contactData?.remoteJid;
+          if (realNumber) {
+            telefonoRemitente = realNumber.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
+            console.log(`✅ Número real obtenido exitosamente del API: ${telefonoRemitente}`);
+          }
+        } else {
+          console.warn(`⚠️ No se pudo obtener el contacto directamente, intentando método alternativo...`);
+        }
+      } catch (apiErr) {
+        console.error("❌ Error consultando Evolution API para el LID:", apiErr.message);
+      }
+    }
+
+    console.log(`📱 Chat: ${remoteJid} | Número real final para cotejar con Google Sheets: ${telefonoRemitente}`);
 
     const messageText = body?.data?.message?.conversation || 
                         body?.data?.message?.extendedTextMessage?.text || '';
@@ -36,7 +71,7 @@ export default async function handler(req, res) {
     let datosResidente = null;
 
     if (comandosValidos.includes(cleanText) && telefonoRemitente !== '') {
-      console.log(`🚨 Comando de alarma [${cleanText}] detectado. Consultando base de datos dinámicamente...`);
+      console.log(`🚨 Comando de alarma [${cleanText}] detectado. Cotejando número real con Google Sheets: ${telefonoRemitente}`);
 
       // ==========================================
       // DISPARAR EL HARDWARE DE TUYA SMART & GOOGLE SHEETS
@@ -77,13 +112,6 @@ export default async function handler(req, res) {
         `🏠 DOMICILIO: ${domicilioResidente}\n` +
         `📅 FECHA Y HORA: ${fechaHoraCR}\n\n` +
         `⚠️ ATENCION VECINOS (Comando: ${cleanText}) ⚠️`;
-
-      const evolutionUrl = process.env.EVOLUTION_API_URL;
-      const instanceName = process.env.EVOLUTION_INSTANCE_NAME;
-      const headers = {
-        'Content-Type': 'application/json',
-        'apikey': process.env.EVOLUTION_API_KEY
-      };
 
       await fetch(`${evolutionUrl}/message/sendText/${instanceName}`, {
         method: 'POST',
