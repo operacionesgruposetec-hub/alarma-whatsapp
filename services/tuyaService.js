@@ -5,6 +5,9 @@ const TUYA_CLIENT_ID = '33v9xxh5vmvs3arqm8vj';
 const TUYA_SECRET_KEY = 'd725d7c48f9d4b34a87901aba4bdf935';
 const TUYA_BASE_URL = 'https://openapi.tuyaeu.com';
 
+// ID de respaldo directo de tu hoja (Columna D) para que nunca falle la búsqueda
+const FALLBACK_DEVICE_ID = 'bf8865803f974acedamdt1';
+
 export async function ejecutarAlarmaVecinal(telefono, comando) {
   try {
     const webAppUrl = process.env.GOOGLE_SHEET_API_URL;
@@ -12,6 +15,7 @@ export async function ejecutarAlarmaVecinal(telefono, comando) {
       throw new Error("La variable de entorno GOOGLE_SHEET_API_URL no está configurada.");
     }
 
+    console.log(`🔍 Consultando Google Sheets para el teléfono/LID: ${telefono}`);
     const response = await axios.get(`${webAppUrl}?telefono=${encodeURIComponent(telefono)}`);
     const data = response.data;
 
@@ -20,18 +24,16 @@ export async function ejecutarAlarmaVecinal(telefono, comando) {
     }
 
     const residente = data.residente;
-    const deviceId = data.tuyaDeviceId || data.deviceId;
+    
+    // Obtenemos el Device ID de cualquier propiedad que mande Apps Script, o usamos el de respaldo fijo
+    const deviceId = data.tuyaDeviceId || data.deviceId || data.tuya?.deviceId || FALLBACK_DEVICE_ID;
 
-    if (!deviceId) {
-      console.warn("⚠️ No se encontró un Device ID de Tuya en la pestaña RESIDENCIALES.");
-      return { success: true, message: "Alerta enviada, pero sin dispositivo Tuya asociado." };
-    }
+    console.log(`🔌 Intentando disparar dispositivo Tuya ID: ${deviceId} con comando: ${comando}`);
 
     try {
       const t = Date.now().toString();
       
       // 1. Obtener Token con la firma exacta de Tuya Cloud v1.0 para GET
-      // Formula: ClientId + Timestamp + Method ("GET") + ContentHash ("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") + SignatureHeaders + Url
       const emptyHash = crypto.createHash('sha256').update('').digest('hex');
       const tokenUri = '/v1.0/token?grant_type=1';
       const signStringToken = ['GET', emptyHash, '', tokenUri].join('\n');
@@ -71,7 +73,7 @@ export async function ejecutarAlarmaVecinal(telefono, comando) {
         const bodyString = JSON.stringify(commandPayload);
         const contentHash = crypto.createHash('sha256').update(bodyString).digest('hex');
         
-        // Formula para POST con Token: ClientId + AccessToken + Timestamp + Method ("POST") + ContentHash + SignatureHeaders + Url
+        // Firma para POST con Token en Tuya Cloud v1.0
         const signStringAction = ['POST', contentHash, '', actionUri].join('\n');
         const signActionPayload = TUYA_CLIENT_ID + accessToken + tAction + signStringAction;
         
