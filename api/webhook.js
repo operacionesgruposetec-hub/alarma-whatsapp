@@ -8,59 +8,65 @@ export default async function handler(req, res) {
   try {
     const body = req.body;
 
-    // 1. Identificar el chat donde se responderá (el grupo)
     const remoteJid = body?.data?.key?.remoteJid || body?.data?.sender || '';
     const senderPn = body?.data?.pushName || 'Vecino';
     
-    // 2. Extraer el identificador crudo del remitente
-    let rawParticipant = body?.data?.key?.participant || body?.data?.participant || body?.data?.sender || remoteJid;
+    // ==========================================
+    // EXTRACCIÓN INTELIGENTE DEL NÚMERO REAL
+    // Buscamos en todas las propiedades del payload de Evolution API 
+    // donde suele venir el número real antes de caer en el LID del grupo.
+    // ==========================================
+    let numeroRealEncontrado = '';
 
-    let telefonoRemitente = rawParticipant.replace('@s.whatsapp.net', '').replace('@lid', '').replace(/[^0-9]/g, '');
+    // 1. Revisar si viene un número explícito en el autor o participante principal que no sea LID
+    const possibleSources = [
+      body?.data?.key?.participant,
+      body?.data?.participant,
+      body?.data?.sender,
+      body?.data?.key?.remoteJid
+    ];
 
-    const evolutionUrl = process.env.EVOLUTION_API_URL;
-    const instanceName = process.env.EVOLUTION_INSTANCE_NAME;
-    const evolutionApiKey = process.env.EVOLUTION_API_KEY;
-
-    const headers = {
-      'Content-Type': 'application/json',
-      'apikey': evolutionApiKey
-    };
-
-    // 3. CONSULTA DINÁMICA AL API SI ES UN CÓDIGO LID:
-    // Si el identificador contiene '@lid' o es un ID interno largo, consultamos 
-    // a la API de Evolution de forma automática para obtener el número real del chip.
-    if (rawParticipant.includes('lid') || telefonoRemitente.length > 12) {
-      console.log(`🔍 Detectado identificador LID (${rawParticipant}). Consultando Evolution API para obtener el número real...`);
-      
-      try {
-        // Endpoint estándar de Evolution API para buscar contacto o perfil
-        const contactResponse = await fetch(`${evolutionUrl}/chat/findContact/${instanceName}`, {
-          method: 'POST',
-          headers: headers,
-          body: JSON.stringify({
-            where: {
-              id: rawParticipant
-            }
-          })
-        });
-
-        if (contactResponse.ok) {
-          const contactData = await contactResponse.json();
-          // Intentamos extraer el número real devuelto por la API
-          const realNumber = contactData?.number || contactData?.id || contactData?.remoteJid;
-          if (realNumber) {
-            telefonoRemitente = realNumber.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
-            console.log(`✅ Número real obtenido exitosamente del API: ${telefonoRemitente}`);
-          }
-        } else {
-          console.warn(`⚠️ No se pudo obtener el contacto directamente, intentando método alternativo...`);
+    for (let source of possibleSources) {
+      if (source && typeof source === 'string' && !source.includes('@lid')) {
+        let cleaned = source.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
+        // Un número real de teléfono válido suele tener entre 8 y 15 dígitos, 
+        // a diferencia de los IDs de grupo o chats que son larguísimos.
+        if (cleaned.length >= 8 && cleaned.length <= 15) {
+          numeroRealEncontrado = cleaned;
+          break;
         }
-      } catch (apiErr) {
-        console.error("❌ Error consultando Evolution API para el LID:", apiErr.message);
       }
     }
 
-    console.log(`📱 Chat: ${remoteJid} | Número real final para cotejar con Google Sheets: ${telefonoRemitente}`);
+    // 2. Si no lo encontramos en las fuentes limpias, revisamos si el body trae metadatos del usuario
+    if (!numeroRealEncontrado && body?.data?.author) {
+      let cleanedAuthor = body.data.author.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
+      if (cleanedAuthor.length >= 8 && cleanedAuthor.length <= 15) {
+        numeroRealEncontrado = cleanedAuthor;
+      }
+    }
+
+    // 3. Fallback final: Si de plano el payload solo trae el LID, 
+    // tomamos cualquier número numérico que aparezca en el objeto que no sea el LID.
+    if (!numeroRealEncontrado) {
+      const rawString = JSON.stringify(body);
+      // Buscamos patrones de números de teléfono en todo el JSON que parezcan números reales
+      const matches = rawString.match(/"([0-9]{10,12})"/g);
+      if (matches && matches.length > 0) {
+        for (let m of matches) {
+          let cleanMatch = m.replace(/"/g, '');
+          if (!cleanMatch.startsWith('1203') && cleanMatch !== '103693412229282') { // Ignorar IDs de grupo o el LID conocido
+            numeroRealEncontrado = cleanMatch;
+            break;
+          }
+        }
+      }
+    }
+
+    // Si todo falla, dejamos el campo limpio pero sin mandar el LID como teléfono de base de datos
+    const telefonoRemitente = numeroRealEncontrado || '';
+
+    console.log(`📱 Chat del Grupo: ${remoteJid} | 🎯 NÚMERO REAL EXTRAÍDO PARA GOOGLE SHEETS: ${telefonoRemitente}`);
 
     const messageText = body?.data?.message?.conversation || 
                         body?.data?.message?.extendedTextMessage?.text || '';
@@ -73,9 +79,6 @@ export default async function handler(req, res) {
     if (comandosValidos.includes(cleanText) && telefonoRemitente !== '') {
       console.log(`🚨 Comando de alarma [${cleanText}] detectado. Cotejando número real con Google Sheets: ${telefonoRemitente}`);
 
-      // ==========================================
-      // DISPARAR EL HARDWARE DE TUYA SMART & GOOGLE SHEETS
-      // ==========================================
       try {
         const resultadoTuya = await ejecutarAlarmaVecinal(telefonoRemitente, cleanText);
         if (resultadoTuya.success) {
@@ -90,9 +93,6 @@ export default async function handler(req, res) {
         console.error("❌ Error crítico ejecutando Tuya Service:", tuyaErr.message);
       }
 
-      // ==========================================
-      // LÓGICA DE WHATSAPP (TEXTO Y FOTO)
-      // ==========================================
       const optionsTime = { 
         timeZone: 'America/Costa_Rica', 
         year: 'numeric', 
@@ -112,6 +112,13 @@ export default async function handler(req, res) {
         `🏠 DOMICILIO: ${domicilioResidente}\n` +
         `📅 FECHA Y HORA: ${fechaHoraCR}\n\n` +
         `⚠️ ATENCION VECINOS (Comando: ${cleanText}) ⚠️`;
+
+      const evolutionUrl = process.env.EVOLUTION_API_URL;
+      const instanceName = process.env.EVOLUTION_INSTANCE_NAME;
+      const headers = {
+        'Content-Type': 'application/json',
+        'apikey': process.env.EVOLUTION_API_KEY
+      };
 
       await fetch(`${evolutionUrl}/message/sendText/${instanceName}`, {
         method: 'POST',
@@ -148,6 +155,8 @@ export default async function handler(req, res) {
           console.error("❌ Error enviando foto a Evolution API:", mediaErr.message);
         }
       }
+    } else if (comandosValidos.includes(cleanText) && telefonoRemitente === '') {
+      console.warn(`⚠️ Se detectó el comando [${cleanText}] pero no se pudo aislar un número de teléfono válido (se descartó el LID).`);
     }
 
     return res.status(200).json({ success: true, status: 'Webhook procesado' });
