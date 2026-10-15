@@ -1,124 +1,103 @@
-import { ejecutarAlarmaVecinal } from '../services/tuyaService.js';
+import axios from 'axios';
+import crypto from 'crypto';
 
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Método no permitido' });
-  }
-
+/**
+ * Función unificada que consulta el Apps Script, dispara el dispositivo Tuya 
+ * y retorna la información del residente para el webhook de WhatsApp.
+ */
+export async function ejecutarAlarmaVecinal(telefono, comando) {
   try {
-    const body = req.body;
+    const webAppUrl = process.env.GOOGLE_SHEET_API_URL;
+    if (!webAppUrl) {
+      throw new Error("La variable de entorno GOOGLE_SHEET_API_URL no está configurada.");
+    }
 
-    // 1. Extracción de datos básicos del mensaje y remitente de Evolution API
-    const remoteJid = body?.data?.key?.remoteJid || body?.data?.sender || '';
-    const senderPn = body?.data?.pushName || 'Vecino';
-    
-    // Limpieza del número de teléfono del emisor para usarlo en la búsqueda
-    const telefonoRemitente = remoteJid.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
+    // 1. Consultar el Apps Script unificado (RESIDENTES -> RESIDENCIALES -> CUENTAS_TUYA)
+    const response = await axios.get(`${webAppUrl}?telefono=${encodeURIComponent(telefono)}`);
+    const data = response.data;
 
-    const messageText = body?.data?.message?.conversation || 
-                        body?.data?.message?.extendedTextMessage?.text || '';
+    if (!data || !data.encontrado) {
+      return { success: false, error: data.error || "Residente no encontrado en la base de datos." };
+    }
 
-    const cleanText = messageText.trim().toUpperCase();
-    const comandosValidos = ['M', 'S', 'I', 'P'];
+    const residente = data.residente;
+    const tuyaInfo = data.tuya;
 
-    // Validamos si el mensaje es uno de los comandos de alarma
-    if (comandosValidos.includes(cleanText)) {
-      console.log(`🚨 Comando de alarma [${cleanText}] detectado de: ${telefonoRemitente}`);
-
-      // ==========================================
-      // NUEVO: DISPARAR EL HARDWARE DE TUYA SMART
-      // ==========================================
+    // Si tiene configurado un dispositivo Tuya y credenciales, intentamos dispararlo
+    if (tuyaInfo && tuyaInfo.deviceId && tuyaInfo.credenciales) {
       try {
-        const resultadoTuya = await ejecutarAlarmaVecinal(telefonoRemitente, cleanText);
-        if (resultadoTuya.success) {
-          console.log(`✅ Tuya Cloud ejecutado con éxito: ${resultadoTuya.message}`);
-        } else {
-          console.warn(`⚠️ Advertencia de Tuya Service: ${resultadoTuya.error || resultadoTuya.message}`);
-        }
-      } catch (tuyaErr) {
-        console.error("❌ Error crítico ejecutando Tuya Service:", tuyaErr.message);
-      }
+        const { clientId, clientSecret, region } = tuyaInfo.credenciales;
+        const deviceId = tuyaInfo.deviceId;
+        
+        const baseUrl = region === 'eu' ? 'https://openapi.tuyaeu.com' : 'https://openapi.tuyaus.com';
+        const timestamp = Date.now().toString();
 
-      // ==========================================
-      // TU LÓGICA EXISTENTE DE WHATSAPP (TEXTO Y FOTO)
-      // ==========================================
-      
-      // (Asumiendo que aquí ya tienes cargados los datos del residente en `datosResidente` 
-      // a través de tu servicio de Google Sheets previo)
-      
-      const optionsTime = { 
-        timeZone: 'America/Costa_Rica', 
-        year: 'numeric', 
-        month: '2-digit', 
-        day: '2-digit', 
-        hour: '2-digit', 
-        minute: '2-digit', 
-        second: '2-digit', 
-        hour12: true 
-      };
-      const fechaHoraCR = new Intl.DateTimeFormat('es-CR', optionsTime).format(new Date());
+        // Obtener Token de acceso de Tuya
+        const tokenUrl = `${baseUrl}/v1.0/token?grant_type=1`;
+        const signForToken = crypto
+          .createHmac('sha256', clientSecret)
+          .update(clientId + timestamp)
+          .digest('hex')
+          .toUpperCase();
 
-      // NOTA: Asegúrate de que `datosResidente` esté definido en tu script con la info de la hoja
-      const nombreResidente = typeof datosResidente !== 'undefined' ? datosResidente.nombre : senderPn;
-      const domicilioResidente = typeof datosResidente !== 'undefined' ? datosResidente.domicilio : 'Residencia Registrada';
+        const tokenResponse = await axios.get(tokenUrl, {
+          headers: {
+            client_id: clientId,
+            sign: signForToken,
+            t: timestamp,
+            sign_method: 'HMAC-SHA256'
+          }
+        });
 
-      const respuestaTexto = `👤 SR/SRA: ${nombreResidente}\n` +
-        `🏠 DOMICILIO: ${domicilioResidente}\n` +
-        `📅 FECHA Y HORA: ${fechaHoraCR}\n\n` +
-        `⚠️ ATENCION VECINOS (Comando: ${cleanText}) ⚠️`;
+        if (tokenResponse.data && tokenResponse.data.success) {
+          const accessToken = tokenResponse.data.result.access_token;
 
-      // Variables de entorno de tu instancia de Evolution
-      const evolutionUrl = process.env.EVOLUTION_API_URL;
-      const instanceName = process.env.EVOLUTION_INSTANCE_NAME;
-      const headers = {
-        'Content-Type': 'application/json',
-        'apikey': process.env.EVOLUTION_API_KEY
-      };
-
-      await fetch(`${evolutionUrl}/message/sendText/${instanceName}`, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify({
-          number: remoteJid,
-          text: respuestaTexto
-        })
-      });
-
-      // 2. ENVIAR FOTO DESDE LA HOJA (Asegurando compatibilidad con Evolution API)
-      if (typeof datosResidente !== 'undefined' && datosResidente.foto && datosResidente.foto.trim() !== "") {
-        let directImageUrl = datosResidente.foto.trim();
-
-        const driveMatch = directImageUrl.match(/\/d\/([a-zA-Z0-9_-]+)/) || directImageUrl.match(/id=([a-zA-Z0-9_-]+)/);
-        if (driveMatch && driveMatch[1]) {
-          const driveFileId = driveMatch[1];
-          directImageUrl = `https://lh3.googleusercontent.com/d/${driveFileId}`;
-        }
-
-        console.log(`🖼️ Intentando enviar foto a Evolution API: ${directImageUrl}`);
-
-        try {
-          await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
-            method: 'POST',
-            headers: headers,
-            body: JSON.stringify({
-              number: remoteJid,
-              mediaMessage: {
-                mediatype: "image",
-                media: directImageUrl,
-                caption: `🔴 FOTO DE LA CASA - ALARMA VECINAL (${cleanText}) 🔴`
+          // Payload del comando Tuya (ajusta 'switch_1' o el code según tu relé)
+          const commandPayload = {
+            commands: [
+              {
+                code: "switch_1", 
+                value: comando === 'M' || comando === 'S'
               }
-            })
+            ]
+          };
+
+          const actionUrl = `/v1.0/devices/${deviceId}/commands`;
+          const tNew = Date.now().toString();
+          
+          // Firma para el comando POST
+          const contentHash = crypto.createHash('sha256').update(JSON.stringify(commandPayload)).digest('hex');
+          const stringToSign = ['POST', contentHash, '', actionUrl].join('\n');
+          const str = clientId + accessToken + tNew + stringToSign;
+          const signForAction = crypto.createHmac('sha256', clientSecret).update(str).digest('hex').toUpperCase();
+
+          await axios.post(`${baseUrl}${actionUrl}`, commandPayload, {
+            headers: {
+              client_id: clientId,
+              access_token: accessToken,
+              sign: signForAction,
+              t: tNew,
+              sign_method: 'HMAC-SHA256',
+              'Content-Type': 'application/json'
+            }
           });
-        } catch (mediaErr) {
-          console.error("❌ Error enviando foto a Evolution API:", mediaErr.message);
+
+          console.log(`✅ Dispositivo Tuya ${deviceId} activado correctamente.`);
         }
+      } catch (tuyaEx) {
+        console.warn("⚠️ Aviso: No se pudo disparar el hardware Tuya, pero se continuará con el flujo de WhatsApp:", tuyaEx.response?.data || tuyaEx.message);
       }
     }
 
-    return res.status(200).json({ success: true, status: 'Webhook procesado' });
+    // Retornamos éxito junto con los datos del residente para que el webhook los use
+    return {
+      success: true,
+      message: "Proceso ejecutado con éxito",
+      datosResidente: residente
+    };
 
   } catch (error) {
-    console.error('Error general en webhook.js:', error);
-    return res.status(500).json({ error: error.message });
+    console.error("Error en ejecutarAlarmaVecinal:", error.message);
+    return { success: false, error: error.message };
   }
 }
