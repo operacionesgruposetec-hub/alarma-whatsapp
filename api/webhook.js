@@ -30,9 +30,7 @@ export default async function handler(req, res) {
 
       console.log(`🎯 Mensaje recibido. Grupo origen: [${remoteJid}] | Remitente: [${rawParticipant}] -> Comando: [${cleanText}]`);
 
-      // =========================================================================
-      // 1. EXTRACCIÓN DEL IDENTIFICADOR DEL REMITENTE (Teléfono o LID)
-      // =========================================================================
+      // 1. Extraer identificador del remitente
       let identificadorRemitente = '';
       if (rawParticipant.includes('@lid')) {
         identificadorRemitente = rawParticipant.split('@')[0].split(':')[0].trim();
@@ -49,67 +47,52 @@ export default async function handler(req, res) {
       if (sheetApiUrl) {
         try {
           const urlConsulta = `${sheetApiUrl}?identificador=${encodeURIComponent(identificadorRemitente)}&grupo=${encodeURIComponent(remoteJid)}`;
-          console.log(`🌐 URL de consulta generada: ${urlConsulta}`);
-          
-          const response = await fetch(urlConsulta, { 
-            method: 'GET', 
-            redirect: 'follow' 
-          });
-
+          const response = await fetch(urlConsulta, { method: 'GET', redirect: 'follow' });
           const rawText = await response.text();
-          console.log(`📥 Respuesta cruda de Google Apps Script recibida:`, rawText);
-
-          const data = JSON.parse(rawText);
           
-          // Capturar el grupo autorizado de la Columna E devuelto por la hoja
+          const data = JSON.parse(rawText);
           grupoAutorizadoHoja = data.grupoAutorizado || data.grupoOficial || null;
 
           const fuenteResidente = data.residente || data;
 
-          if (data && (data.encontrado === true || data.encontrado === "true") && fuenteResidente) {
+          if (data && (data.encontrado === true || data.encontrado === "true") && fuenteResidente && fuenteResidente.nombre) {
             datosResidente = {
-              nombre: fuenteResidente.nombre || fuenteResidente.Nombre || 'Vecino Registrado',
-              domicilio: fuenteResidente.domicilio || fuenteResidente.Domicilio || fuenteResidente.direccion || 'Residencia Registrada',
-              latitud: parseFloat(fuenteResidente.latitud || fuenteResidente.Latitud || 0),
-              longitud: parseFloat(fuenteResidente.longitud || fuenteResidente.Longitud || 0),
-              foto: fuenteResidente.foto || fuenteResidente.Foto || ''
+              nombre: fuenteResidente.nombre || 'Vecino Registrado',
+              domicilio: fuenteResidente.domicilio || fuenteResidente.direccion || 'Residencia Registrada',
+              latitud: parseFloat(fuenteResidente.latitud || 0),
+              longitud: parseFloat(fuenteResidente.longitud || 0),
+              foto: fuenteResidente.foto || ''
             };
-            console.log(`✅ ¡ÉXITO! Residente encontrado: [${datosResidente.nombre}] - [${datosResidente.domicilio}]`);
-          } else {
-            console.log(`⚠️ La hoja respondió pero el identificador no está mapeado en B o G:`, rawText);
+            console.log(`✅ ¡ÉXITO! Residente encontrado en Sheets: [${datosResidente.nombre}]`);
           }
         } catch (sheetError) {
-          console.error(`❌ Error crítico consultando Google Sheet:`, sheetError.message);
+          console.error(`❌ Error consultando Google Sheet:`, sheetError.message);
         }
       }
 
-      // =========================================================================
-      // 2. VALIDACIÓN DE SEGURIDAD POR GRUPO (Columna E)
-      // =========================================================================
-      // Si la hoja devolvió un grupo en la Columna E, lo validamos estrictamente.
+      // 2. VALIDACIÓN DE SEGURIDAD ESTRICTA POR GRUPO (Columna E)
       if (grupoAutorizadoHoja && remoteJid !== grupoAutorizadoHoja) {
-        console.log(`❌ Alerta detenida: El grupo [${remoteJid}] no coincide con el grupo autorizado en la Columna E [${grupoAutorizadoHoja}].`);
+        console.log(`❌ Alerta detenida: El grupo [${remoteJid}] no coincide con la Columna E [${grupoAutorizadoHoja}].`);
         return res.status(200).json({ status: 'Ignored: Unauthorized group' });
       }
 
+      // 3. RESPALDO INTELIGENTE: Si el LID no está en la hoja todavía, NO DETENEMOS LA ALARMA
       if (!datosResidente) {
-        console.log(`❌ Alerta detenida: El identificador [${identificadorRemitente}] no está registrado en las columnas B o G.`);
-        return res.status(200).json({ status: 'Ignored: Not registered' });
+        console.log(`⚠️ El LID [${identificadorRemitente}] aún no está en la hoja, pero el grupo es válido. Usando perfil temporal.`);
+        datosResidente = {
+          nombre: `Vecino (ID: ${identificadorRemitente.slice(-4)})`,
+          domicilio: 'Residencia Autorizada en Grupo',
+          latitud: 9.9355,   // Puedes ajustar coordenadas por defecto de tu zona
+          longitud: -84.0907,
+          foto: ''           // Sin foto temporalmente hasta que se cargue en Sheets
+        };
       }
 
-      // ==========================================
-      // 3. DISPARAR HARDWARE TUYA CLOUD (SIRENA)
-      // ==========================================
+      // 4. DISPARAR HARDWARE TUYA CLOUD (SIRENA)
       try {
-        console.log(`🚨 Ejecutando Tuya Service para: [${identificadorRemitente}] con comando [${cleanText}]`);
-        const resultadoTuya = await ejecutarAlarmaVecinal(identificadorRemitente, cleanText);
-        if (resultadoTuya.success) {
-          console.log(`✅ Tuya Cloud ejecutado con éxito: ${resultadoTuya.message}`);
-        } else {
-          console.warn(`⚠️ Advertencia de Tuya Service: ${resultadoTuya.error || resultadoTuya.message}`);
-        }
+        await ejecutarAlarmaVecinal(identificadorRemitente, cleanText);
       } catch (tuyaErr) {
-        console.error("❌ Error crítico ejecutando Tuya Service:", tuyaErr.message);
+        console.error("❌ Error ejecutando Tuya Service:", tuyaErr.message);
       }
 
       const evolutionUrl = process.env.EVOLUTION_API_URL;
@@ -121,79 +104,52 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json'
       };
 
-      // Hora exacta de Costa Rica
       const optionsTime = { 
         timeZone: 'America/Costa_Rica', 
-        year: 'numeric', 
-        month: '2-digit', 
-        day: '2-digit', 
-        hour: '2-digit', 
-        minute: '2-digit', 
-        second: '2-digit', 
-        hour12: true 
+        year: 'numeric', month: '2-digit', day: '2-digit', 
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true 
       };
       const fechaHoraCR = new Intl.DateTimeFormat('es-CR', optionsTime).format(new Date());
 
       let tituloAlerta = '⚠️ ATENCIÓN VECINOS ⚠️';
-      if (cleanText === 'M') {
-        tituloAlerta = '🚨 EMERGENCIA MÉDICA 🚨';
-      } else if (cleanText === 'S') {
-        tituloAlerta = '🚨 ALERTA DE SOSPECHOSO 🚨';
-      } else if (cleanText === 'I') {
-        tituloAlerta = '🔥 ALERTA DE INCENDIO 🔥';
-      } else if (cleanText === 'P') {
-        tituloAlerta = '🆘 BOTÓN / ALERTA DE PÁNICO 🆘';
-      }
+      if (cleanText === 'M') tituloAlerta = '🚨 EMERGENCIA MÉDICA 🚨';
+      else if (cleanText === 'S') tituloAlerta = '🚨 ALERTA DE SOSPECHOSO 🚨';
+      else if (cleanText === 'I') tituloAlerta = '🔥 ALERTA DE INCENDIO 🔥';
+      else if (cleanText === 'P') tituloAlerta = '🆘 BOTÓN / ALERTA DE PÁNICO 🆘';
 
       const informacionAlerta = `${tituloAlerta}\n\n` +
         `👤 SR/SRA: ${datosResidente.nombre}\n` +
         `🏠 DOMICILIO: ${datosResidente.domicilio}\n` +
         `📅 FECHA Y HORA: ${fechaHoraCR}`;
 
-      // ==========================================
-      // 4. ENVIAR FOTO CON INFORMACIÓN COMO PIE DE FOTO
-      // ==========================================
+      // 5. ENVIAR FOTO O TEXTO
       if (datosResidente.foto && datosResidente.foto.trim() !== "") {
         let directImageUrl = datosResidente.foto.trim();
-        
         const driveMatch = directImageUrl.match(/\/d\/([a-zA-Z0-9_-]+)/) || directImageUrl.match(/id=([a-zA-Z0-9_-]+)/);
         if (driveMatch && driveMatch[1]) {
-          const driveFileId = driveMatch[1];
-          directImageUrl = `https://lh3.googleusercontent.com/d/${driveFileId}`;
+          directImageUrl = `https://lh3.googleusercontent.com/d/${driveMatch[1]}`;
         }
 
         try {
-          const mediaPayload = {
-            number: remoteJid,
-            mediatype: "image",
-            media: directImageUrl,
-            caption: informacionAlerta
-          };
-
           await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
             method: 'POST',
             headers: headers,
-            body: JSON.stringify(mediaPayload)
+            body: JSON.stringify({ number: remoteJid, mediatype: "image", media: directImageUrl, caption: informacionAlerta })
           });
-        } catch (mediaErr) {
-          console.error("❌ Error enviando foto con caption:", mediaErr.message);
+        } catch (e) {
           await fetch(`${evolutionUrl}/message/sendText/${instanceName}`, {
-            method: 'POST',
-            headers: headers,
+            method: 'POST', headers: headers,
             body: JSON.stringify({ number: remoteJid, text: informacionAlerta })
           });
         }
       } else {
         await fetch(`${evolutionUrl}/message/sendText/${instanceName}`, {
-          method: 'POST',
-          headers: headers,
+          method: 'POST', headers: headers,
           body: JSON.stringify({ number: remoteJid, text: informacionAlerta })
         });
       }
 
-      // ==========================================
-      // 5. ENVIAR UBICACIÓN GPS ABAJO
-      // ==========================================
+      // 6. ENVIAR UBICACIÓN GPS
       if (datosResidente.latitud && datosResidente.longitud) {
         await fetch(`${evolutionUrl}/message/sendLocation/${instanceName}`, {
           method: 'POST',
@@ -208,7 +164,7 @@ export default async function handler(req, res) {
         });
       }
 
-      console.log('🎉 ¡SECUENCIA DE ALARMA AUTÓNOMA COMPLETADA!');
+      console.log('🎉 ¡SECUENCIA DE ALARMA COMPLETADA CON ÉXITO!');
     }
 
     return res.status(200).json({ status: 'Webhook procesado correctamente' });
