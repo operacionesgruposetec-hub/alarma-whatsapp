@@ -8,15 +8,12 @@ export default async function handler(req, res) {
   try {
     const body = req.body;
 
-    // 1. Extracción de datos básicos del mensaje y remitente de Evolution API
+    // 1. Extracción de datos básicos del mensaje y remitente de Evolution API (TAL CUAL TU CÓDIGO ORIGINAL)
     const remoteJid = body?.data?.key?.remoteJid || body?.data?.sender || '';
     const senderPn = body?.data?.pushName || 'Vecino';
     
-    // CORRECCIÓN CLAVE: Extraemos el emisor real (soportando tanto chats privados como grupos de WhatsApp)
-    const rawParticipant = body?.data?.key?.participant || body?.data?.participant || body?.data?.sender || remoteJid;
-    
-    // Limpieza del número de teléfono del emisor real para usarlo en la búsqueda
-    const telefonoRemitente = rawParticipant.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
+    // Limpieza del número de teléfono del emisor para usarlo en la búsqueda
+    const telefonoRemitente = remoteJid.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
 
     const messageText = body?.data?.message?.conversation || 
                         body?.data?.message?.extendedTextMessage?.text || '';
@@ -24,7 +21,7 @@ export default async function handler(req, res) {
     const cleanText = messageText.trim().toUpperCase();
     const comandosValidos = ['M', 'S', 'I', 'P'];
 
-    // Variable para almacenar los datos del residente devueltos por tu service
+    // Variable para los datos del residente
     let datosResidente = null;
 
     // Validamos si el mensaje es uno de los comandos de alarma
@@ -32,7 +29,7 @@ export default async function handler(req, res) {
       console.log(`🚨 Comando de alarma [${cleanText}] detectado de: ${telefonoRemitente}`);
 
       // ==========================================
-      // DISPARAR EL HARDWARE DE TUYA SMART & SHEETS
+      // DISPARAR EL HARDWARE DE TUYA SMART
       // ==========================================
       try {
         const resultadoTuya = await ejecutarAlarmaVecinal(telefonoRemitente, cleanText);
@@ -49,7 +46,7 @@ export default async function handler(req, res) {
       }
 
       // ==========================================
-      // LÓGICA DE WHATSAPP (TEXTO Y FOTO)
+      // LÓGICA EXISTENTE DE WHATSAPP (TEXTO Y FOTO)
       // ==========================================
       const optionsTime = { 
         timeZone: 'America/Costa_Rica', 
