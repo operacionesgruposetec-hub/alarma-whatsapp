@@ -28,10 +28,10 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Omitted' });
       }
 
-      console.log(`🎯 Mensaje recibido en grupo. Remitente bruto: [${rawParticipant}] -> Comando: [${cleanText}]`);
+      console.log(`🎯 Mensaje recibido. Grupo origen: [${remoteJid}] | Remitente: [${rawParticipant}] -> Comando: [${cleanText}]`);
 
       // =========================================================================
-      // EXTRACCIÓN 100% PURA Y GENÉRICA (CERO NÚMEROS HARDCODEADOS)
+      // 1. EXTRACCIÓN DEL IDENTIFICADOR DEL REMITENTE (Teléfono o LID)
       // =========================================================================
       let identificadorRemitente = '';
       if (rawParticipant.includes('@lid')) {
@@ -40,14 +40,15 @@ export default async function handler(req, res) {
         identificadorRemitente = rawParticipant.split('@')[0].split(':')[0].replace(/\D/g, '');
       }
 
-      console.log(`📊 Consultando Google Sheets con el identificador exacto: [${identificadorRemitente}]`);
+      console.log(`📊 Consultando Google Sheets con el identificador: [${identificadorRemitente}]`);
 
       const sheetApiUrl = process.env.GOOGLE_SHEET_API_URL;
       let datosResidente = null;
+      let grupoAutorizadoHoja = null;
 
       if (sheetApiUrl) {
         try {
-          const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(identificadorRemitente)}`;
+          const urlConsulta = `${sheetApiUrl}?identificador=${encodeURIComponent(identificadorRemitente)}&grupo=${encodeURIComponent(remoteJid)}`;
           console.log(`🌐 URL de consulta generada: ${urlConsulta}`);
           
           const response = await fetch(urlConsulta, { 
@@ -59,6 +60,10 @@ export default async function handler(req, res) {
           console.log(`📥 Respuesta cruda de Google Apps Script recibida:`, rawText);
 
           const data = JSON.parse(rawText);
+          
+          // Capturar el grupo autorizado de la Columna E devuelto por la hoja
+          grupoAutorizadoHoja = data.grupoAutorizado || data.grupoOficial || null;
+
           const fuenteResidente = data.residente || data;
 
           if (data && (data.encontrado === true || data.encontrado === "true") && fuenteResidente) {
@@ -69,22 +74,31 @@ export default async function handler(req, res) {
               longitud: parseFloat(fuenteResidente.longitud || fuenteResidente.Longitud || 0),
               foto: fuenteResidente.foto || fuenteResidente.Foto || ''
             };
-            console.log(`✅ ¡ÉXITO! Residente encontrado en la base de datos: [${datosResidente.nombre}] - [${datosResidente.domicilio}]`);
+            console.log(`✅ ¡ÉXITO! Residente encontrado: [${datosResidente.nombre}] - [${datosResidente.domicilio}]`);
           } else {
-            console.log(`⚠️ La hoja respondió pero el identificador no está registrado:`, rawText);
+            console.log(`⚠️ La hoja respondió pero el identificador no está mapeado en B o G:`, rawText);
           }
         } catch (sheetError) {
           console.error(`❌ Error crítico consultando Google Sheet:`, sheetError.message);
         }
       }
 
+      // =========================================================================
+      // 2. VALIDACIÓN DE SEGURIDAD POR GRUPO (Columna E)
+      // =========================================================================
+      // Si la hoja devolvió un grupo en la Columna E, lo validamos estrictamente.
+      if (grupoAutorizadoHoja && remoteJid !== grupoAutorizadoHoja) {
+        console.log(`❌ Alerta detenida: El grupo [${remoteJid}] no coincide con el grupo autorizado en la Columna E [${grupoAutorizadoHoja}].`);
+        return res.status(200).json({ status: 'Ignored: Unauthorized group' });
+      }
+
       if (!datosResidente) {
-        console.log(`❌ Alerta detenida: El identificador [${identificadorRemitente}] no está autorizado.`);
+        console.log(`❌ Alerta detenida: El identificador [${identificadorRemitente}] no está registrado en las columnas B o G.`);
         return res.status(200).json({ status: 'Ignored: Not registered' });
       }
 
       // ==========================================
-      // DISPARAR HARDWARE TUYA CLOUD (SIRENA)
+      // 3. DISPARAR HARDWARE TUYA CLOUD (SIRENA)
       // ==========================================
       try {
         console.log(`🚨 Ejecutando Tuya Service para: [${identificadorRemitente}] con comando [${cleanText}]`);
@@ -136,7 +150,9 @@ export default async function handler(req, res) {
         `🏠 DOMICILIO: ${datosResidente.domicilio}\n` +
         `📅 FECHA Y HORA: ${fechaHoraCR}`;
 
-      // 1. ENVIAR FOTO CON INFORMACIÓN COMO PIE DE FOTO
+      // ==========================================
+      // 4. ENVIAR FOTO CON INFORMACIÓN COMO PIE DE FOTO
+      // ==========================================
       if (datosResidente.foto && datosResidente.foto.trim() !== "") {
         let directImageUrl = datosResidente.foto.trim();
         
@@ -175,7 +191,9 @@ export default async function handler(req, res) {
         });
       }
 
-      // 2. ENVIAR UBICACIÓN GPS ABAJO
+      // ==========================================
+      // 5. ENVIAR UBICACIÓN GPS ABAJO
+      // ==========================================
       if (datosResidente.latitud && datosResidente.longitud) {
         await fetch(`${evolutionUrl}/message/sendLocation/${instanceName}`, {
           method: 'POST',
