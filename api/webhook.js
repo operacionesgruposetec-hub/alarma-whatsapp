@@ -1,5 +1,3 @@
-import { ejecutarAlarmaVecinal } from '../services/tuyaService.js';
-
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Método no permitido' });
@@ -8,117 +6,88 @@ export default async function handler(req, res) {
   try {
     const body = req.body;
 
-    const remoteJid = body?.data?.key?.remoteJid || body?.data?.sender || '';
-    const senderPn = body?.data?.pushName || 'Vecino';
-    
-    // ==========================================
-    // EXTRACCIÓN INTELIGENTE DEL NÚMERO REAL
-    // Buscamos en todas las propiedades del payload de Evolution API 
-    // donde suele venir el número real antes de caer en el LID del grupo.
-    // ==========================================
-    let numeroRealEncontrado = '';
+    if (body.event === 'MESSAGES_UPSERT' || body.event === 'messages.upsert') {
+      const messageData = body.data;
 
-    // 1. Revisar si viene un número explícito en el autor o participante principal que no sea LID
-    const possibleSources = [
-      body?.data?.key?.participant,
-      body?.data?.participant,
-      body?.data?.sender,
-      body?.data?.key?.remoteJid
-    ];
-
-    for (let source of possibleSources) {
-      if (source && typeof source === 'string' && !source.includes('@lid')) {
-        let cleaned = source.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
-        // Un número real de teléfono válido suele tener entre 8 y 15 dígitos, 
-        // a diferencia de los IDs de grupo o chats que son larguísimos.
-        if (cleaned.length >= 8 && cleaned.length <= 15) {
-          numeroRealEncontrado = cleaned;
-          break;
-        }
+      if (messageData?.key?.fromMe) {
+        return res.status(200).json({ status: 'Ignored: From me' });
       }
-    }
 
-    // 2. Si no lo encontramos en las fuentes limpias, revisamos si el body trae metadatos del usuario
-    if (!numeroRealEncontrado && body?.data?.author) {
-      let cleanedAuthor = body.data.author.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
-      if (cleanedAuthor.length >= 8 && cleanedAuthor.length <= 15) {
-        numeroRealEncontrado = cleanedAuthor;
+      const remoteJid = messageData?.key?.remoteJid || messageData?.remoteJid;
+      
+      // Capturamos el identificador crudo (puede ser número o LID)
+      const rawParticipant = messageData?.key?.participant || messageData?.participant || messageData?.sender || '';
+      
+      const messageText = messageData?.message?.conversation || 
+                          messageData?.message?.extendedTextMessage?.text || 
+                          messageData?.body || '';
+
+      const cleanText = messageText.trim().toUpperCase();
+
+      if (!['M', 'S', 'I', 'P'].includes(cleanText)) {
+        return res.status(200).json({ status: 'Omitted' });
       }
-    }
 
-    // 3. Fallback final: Si de plano el payload solo trae el LID, 
-    // tomamos cualquier número numérico que aparezca en el objeto que no sea el LID.
-    if (!numeroRealEncontrado) {
-      const rawString = JSON.stringify(body);
-      // Buscamos patrones de números de teléfono en todo el JSON que parezcan números reales
-      const matches = rawString.match(/"([0-9]{10,12})"/g);
-      if (matches && matches.length > 0) {
-        for (let m of matches) {
-          let cleanMatch = m.replace(/"/g, '');
-          if (!cleanMatch.startsWith('1203') && cleanMatch !== '103693412229282') { // Ignorar IDs de grupo o el LID conocido
-            numeroRealEncontrado = cleanMatch;
-            break;
+      console.log(`🎯 Mensaje recibido en grupo. Remitente: [${rawParticipant}] -> Comando: [${cleanText}]`);
+
+      // Limpieza genérica: Eliminamos sufijos de WhatsApp pero MANTENEMOS el identificador 
+      // (ya sea el número o el LID) para que Google Apps Script lo busque de forma dinámica.
+      const identificadorEnvio = rawParticipant.split('@')[0].split(':')[0].trim();
+
+      console.log(`📊 Consultando Google Sheets con el identificador del remitente: [${identificadorEnvio}]`);
+
+      const sheetApiUrl = process.env.GOOGLE_SHEET_API_URL;
+      let datosResidente = null;
+
+      if (sheetApiUrl) {
+        try {
+          // Enviamos el identificador al Apps Script sin quemar ningún número en Vercel
+          const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(identificadorEnvio)}`;
+          
+          const response = await fetch(urlConsulta, { 
+            method: 'GET', 
+            redirect: 'follow' 
+          });
+
+          const rawText = await response.text();
+          const data = JSON.parse(rawText);
+          
+          if (data && data.encontrado) {
+            datosResidente = {
+              nombre: data.nombre,
+              domicilio: data.domicilio,
+              latitud: parseFloat(data.latitud),
+              longitud: parseFloat(data.longitud),
+              foto: data.foto
+            };
+            console.log(`✅ ¡ÉXITO! Residente encontrado: [${datosResidente.nombre}]`);
+          } else {
+            console.log(`⚠️ La hoja respondió pero el identificador no hizo match.`);
           }
+        } catch (sheetError) {
+          console.error(`❌ Error crítico consultando Google Sheet:`, sheetError.message);
         }
       }
-    }
 
-    // Si todo falla, dejamos el campo limpio pero sin mandar el LID como teléfono de base de datos
-    const telefonoRemitente = numeroRealEncontrado || '';
-
-    console.log(`📱 Chat del Grupo: ${remoteJid} | 🎯 NÚMERO REAL EXTRAÍDO PARA GOOGLE SHEETS: ${telefonoRemitente}`);
-
-    const messageText = body?.data?.message?.conversation || 
-                        body?.data?.message?.extendedTextMessage?.text || '';
-
-    const cleanText = messageText.trim().toUpperCase();
-    const comandosValidos = ['M', 'S', 'I', 'P'];
-
-    let datosResidente = null;
-
-    if (comandosValidos.includes(cleanText) && telefonoRemitente !== '') {
-      console.log(`🚨 Comando de alarma [${cleanText}] detectado. Cotejando número real con Google Sheets: ${telefonoRemitente}`);
-
-      try {
-        const resultadoTuya = await ejecutarAlarmaVecinal(telefonoRemitente, cleanText);
-        if (resultadoTuya.success) {
-          console.log(`✅ Tuya Cloud ejecutado con éxito: ${resultadoTuya.message}`);
-          if (resultadoTuya.datosResidente) {
-            datosResidente = resultadoTuya.datosResidente;
-          }
-        } else {
-          console.warn(`⚠️ Advertencia de Tuya Service: ${resultadoTuya.error || resultadoTuya.message}`);
-        }
-      } catch (tuyaErr) {
-        console.error("❌ Error crítico ejecutando Tuya Service:", tuyaErr.message);
+      if (!datosResidente) {
+        console.log(`❌ Alerta detenida: El remitente no fue autorizado.`);
+        return res.status(200).json({ status: 'Ignored: Not registered' });
       }
-
-      const optionsTime = { 
-        timeZone: 'America/Costa_Rica', 
-        year: 'numeric', 
-        month: '2-digit', 
-        day: '2-digit', 
-        hour: '2-digit', 
-        minute: '2-digit', 
-        second: '2-digit', 
-        hour12: true 
-      };
-      const fechaHoraCR = new Intl.DateTimeFormat('es-CR', optionsTime).format(new Date());
-
-      const nombreResidente = datosResidente ? datosResidente.nombre : senderPn;
-      const domicilioResidente = datosResidente ? datosResidente.domicilio : 'Residencia Registrada';
-
-      const respuestaTexto = `👤 SR/SRA: ${nombreResidente}\n` +
-        `🏠 DOMICILIO: ${domicilioResidente}\n` +
-        `📅 FECHA Y HORA: ${fechaHoraCR}\n\n` +
-        `⚠️ ATENCION VECINOS (Comando: ${cleanText}) ⚠️`;
 
       const evolutionUrl = process.env.EVOLUTION_API_URL;
-      const instanceName = process.env.EVOLUTION_INSTANCE_NAME;
+      const evolutionKey = process.env.EVOLUTION_API_KEY;
+      const instanceName = process.env.EVOLUTION_INSTANCE_NAME || 'residencial-api';
+
       const headers = {
-        'Content-Type': 'application/json',
-        'apikey': process.env.EVOLUTION_API_KEY
+        'apikey': evolutionKey,
+        'Content-Type': 'application/json'
       };
+
+      // 1. ENVIAR TEXTO
+      const respuestaTexto = `👤 SR/SRA: ${datosResidente.nombre}\n` +
+        `🏠 DOMICILIO: ${datosResidente.domicilio}\n` +
+        `📅 FECHA Y HORA: ${new Date().toLocaleString()}\n\n` +
+        `⚠️ ATENCION VECINOS (Comando: ${cleanText}) ⚠️`;
 
       await fetch(`${evolutionUrl}/message/sendText/${instanceName}`, {
         method: 'POST',
@@ -129,40 +98,44 @@ export default async function handler(req, res) {
         })
       });
 
-      if (datosResidente && datosResidente.foto && datosResidente.foto.trim() !== "") {
-        let directImageUrl = datosResidente.foto.trim();
-
-        const driveMatch = directImageUrl.match(/\/d\/([a-zA-Z0-9_-]+)/) || directImageUrl.match(/id=([a-zA-Z0-9_-]+)/);
-        if (driveMatch && driveMatch[1]) {
-          const driveFileId = driveMatch[1];
-          directImageUrl = `https://lh3.googleusercontent.com/d/${driveFileId}`;
-        }
-
-        try {
-          await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
-            method: 'POST',
-            headers: headers,
-            body: JSON.stringify({
-              number: remoteJid,
-              mediaMessage: {
-                mediatype: "image",
-                media: directImageUrl,
-                caption: `🔴 FOTO DE LA CASA - ALARMA VECINAL (${cleanText}) 🔴`
-              }
-            })
-          });
-        } catch (mediaErr) {
-          console.error("❌ Error enviando foto a Evolution API:", mediaErr.message);
-        }
+      // 2. ENVIAR FOTO
+      if (datosResidente.foto) {
+        await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({
+            number: remoteJid,
+            mediaMessage: {
+              mediatype: "image",
+              media: datosResidente.foto,
+              caption: `🔴 FOTO DE LA CASA - ALARMA VECINAL (${cleanText}) 🔴`
+            }
+          })
+        });
       }
-    } else if (comandosValidos.includes(cleanText) && telefonoRemitente === '') {
-      console.warn(`⚠️ Se detectó el comando [${cleanText}] pero no se pudo aislar un número de teléfono válido (se descartó el LID).`);
+
+      // 3. ENVIAR UBICACIÓN GPS
+      if (datosResidente.latitud && datosResidente.longitud) {
+        await fetch(`${evolutionUrl}/message/sendLocation/${instanceName}`, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({
+            number: remoteJid,
+            name: `Ubicación - ${datosResidente.nombre}`,
+            address: datosResidente.domicilio,
+            latitude: datosResidente.latitud,
+            longitude: datosResidente.longitud
+          })
+        });
+      }
+
+      console.log('🎉 ¡SECUENCIA DE ALARMA COMPLETADA!');
     }
 
-    return res.status(200).json({ success: true, status: 'Webhook procesado' });
+    return res.status(200).json({ status: 'Webhook procesado correctamente' });
 
   } catch (error) {
-    console.error('Error general en webhook.js:', error);
-    return res.status(500).json({ error: error.message });
+    console.error('❌ Error crítico general:', error);
+    return res.status(500).json({ error: 'Error interno del servidor' });
   }
 }
