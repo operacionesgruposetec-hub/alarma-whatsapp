@@ -1,4 +1,51 @@
-// 1. ENVIAR TEXTO CON LOS DATOS DE LA HOJA (Forzando hora de Costa Rica)
+import { ejecutarAlarmaVecinal } from '../services/tuyaService.js';
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Método no permitido' });
+  }
+
+  try {
+    const body = req.body;
+
+    // 1. Extracción de datos básicos del mensaje y remitente de Evolution API
+    const remoteJid = body?.data?.key?.remoteJid || body?.data?.sender || '';
+    const senderPn = body?.data?.pushName || 'Vecino';
+    
+    // Limpieza del número de teléfono del emisor para usarlo en la búsqueda
+    const telefonoRemitente = remoteJid.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
+
+    const messageText = body?.data?.message?.conversation || 
+                        body?.data?.message?.extendedTextMessage?.text || '';
+
+    const cleanText = messageText.trim().toUpperCase();
+    const comandosValidos = ['M', 'S', 'I', 'P'];
+
+    // Validamos si el mensaje es uno de los comandos de alarma
+    if (comandosValidos.includes(cleanText)) {
+      console.log(`🚨 Comando de alarma [${cleanText}] detectado de: ${telefonoRemitente}`);
+
+      // ==========================================
+      // NUEVO: DISPARAR EL HARDWARE DE TUYA SMART
+      // ==========================================
+      try {
+        const resultadoTuya = await ejecutarAlarmaVecinal(telefonoRemitente, cleanText);
+        if (resultadoTuya.success) {
+          console.log(`✅ Tuya Cloud ejecutado con éxito: ${resultadoTuya.message}`);
+        } else {
+          console.warn(`⚠️ Advertencia de Tuya Service: ${resultadoTuya.error || resultadoTuya.message}`);
+        }
+      } catch (tuyaErr) {
+        console.error("❌ Error crítico ejecutando Tuya Service:", tuyaErr.message);
+      }
+
+      // ==========================================
+      // TU LÓGICA EXISTENTE DE WHATSAPP (TEXTO Y FOTO)
+      // ==========================================
+      
+      // (Asumiendo que aquí ya tienes cargados los datos del residente en `datosResidente` 
+      // a través de tu servicio de Google Sheets previo)
+      
       const optionsTime = { 
         timeZone: 'America/Costa_Rica', 
         year: 'numeric', 
@@ -11,10 +58,22 @@
       };
       const fechaHoraCR = new Intl.DateTimeFormat('es-CR', optionsTime).format(new Date());
 
-      const respuestaTexto = `👤 SR/SRA: ${datosResidente.nombre}\n` +
-        `🏠 DOMICILIO: ${datosResidente.domicilio}\n` +
+      // NOTA: Asegúrate de que `datosResidente` esté definido en tu script con la info de la hoja
+      const nombreResidente = typeof datosResidente !== 'undefined' ? datosResidente.nombre : senderPn;
+      const domicilioResidente = typeof datosResidente !== 'undefined' ? datosResidente.domicilio : 'Residencia Registrada';
+
+      const respuestaTexto = `👤 SR/SRA: ${nombreResidente}\n` +
+        `🏠 DOMICILIO: ${domicilioResidente}\n` +
         `📅 FECHA Y HORA: ${fechaHoraCR}\n\n` +
         `⚠️ ATENCION VECINOS (Comando: ${cleanText}) ⚠️`;
+
+      // Variables de entorno de tu instancia de Evolution
+      const evolutionUrl = process.env.EVOLUTION_API_URL;
+      const instanceName = process.env.EVOLUTION_INSTANCE_NAME;
+      const headers = {
+        'Content-Type': 'application/json',
+        'apikey': process.env.EVOLUTION_API_KEY
+      };
 
       await fetch(`${evolutionUrl}/message/sendText/${instanceName}`, {
         method: 'POST',
@@ -26,10 +85,9 @@
       });
 
       // 2. ENVIAR FOTO DESDE LA HOJA (Asegurando compatibilidad con Evolution API)
-      if (datosResidente.foto && datosResidente.foto.trim() !== "") {
+      if (typeof datosResidente !== 'undefined' && datosResidente.foto && datosResidente.foto.trim() !== "") {
         let directImageUrl = datosResidente.foto.trim();
 
-        // Convertimos el link de Google Drive a formato de visualización directa si es necesario
         const driveMatch = directImageUrl.match(/\/d\/([a-zA-Z0-9_-]+)/) || directImageUrl.match(/id=([a-zA-Z0-9_-]+)/);
         if (driveMatch && driveMatch[1]) {
           const driveFileId = driveMatch[1];
@@ -55,3 +113,12 @@
           console.error("❌ Error enviando foto a Evolution API:", mediaErr.message);
         }
       }
+    }
+
+    return res.status(200).json({ success: true, status: 'Webhook procesado' });
+
+  } catch (error) {
+    console.error('Error general en webhook.js:', error);
+    return res.status(500).json({ error: error.message });
+  }
+}
