@@ -12,13 +12,20 @@ export default async function handler(req, res) {
     const remoteJid = body?.data?.key?.remoteJid || body?.data?.sender || '';
     const senderPn = body?.data?.pushName || 'Vecino';
     
-    // 2. Extraer el identificador del remitente de forma limpia y directa del payload de Evolution API
-    const rawParticipant = body?.data?.key?.participant || body?.data?.participant || body?.data?.sender || remoteJid;
+    // 2. Extracción dinámica y limpia: 
+    // Evaluamos si el payload trae un número real en el sender o si usa el participant con lid.
+    // Tomamos el campo que contenga el identificador disponible de forma totalmente genérica.
+    let rawParticipant = body?.data?.sender || 
+                         body?.data?.key?.participant || 
+                         body?.data?.participant || 
+                         remoteJid;
 
-    // Limpieza estándar: eliminamos sufijos de WhatsApp pero dejamos el identificador limpio
+    // Si el identificador contiene '@lid', extraemos los dígitos limpios del LID 
+    // para enviárselos al Apps Script de Google Sheets de forma estandarizada, 
+    // permitiendo que tu hoja maneje la equivalencia sin que el código tenga números fijos.
     const telefonoRemitente = rawParticipant.replace('@s.whatsapp.net', '').replace('@lid', '').replace(/[^0-9]/g, '');
 
-    console.log(`📱 Chat: ${remoteJid} | Identificador enviado a Google Sheets: ${telefonoRemitente}`);
+    console.log(`📱 Chat: ${remoteJid} | ID/Teléfono dinámico procesado para Google Sheets: ${telefonoRemitente}`);
 
     const messageText = body?.data?.message?.conversation || 
                         body?.data?.message?.extendedTextMessage?.text || '';
@@ -29,7 +36,7 @@ export default async function handler(req, res) {
     let datosResidente = null;
 
     if (comandosValidos.includes(cleanText) && telefonoRemitente !== '') {
-      console.log(`🚨 Comando de alarma [${cleanText}] detectado. Consultando Apps Script con ID: ${telefonoRemitente}`);
+      console.log(`🚨 Comando de alarma [${cleanText}] detectado. Consultando base de datos dinámicamente...`);
 
       // ==========================================
       // DISPARAR EL HARDWARE DE TUYA SMART & GOOGLE SHEETS
