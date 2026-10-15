@@ -28,24 +28,27 @@ export async function ejecutarAlarmaVecinal(telefono, comando) {
     }
 
     try {
-      const timestamp = Date.now().toString();
-
-      // Firma correcta para el Token en Tuya Cloud v1.0
-      // String to sign para GET /v1.0/token?grant_type=1:
-      // client_id + timestamp
-      const signStr = TUYA_CLIENT_ID + timestamp;
+      const t = Date.now().toString();
+      
+      // 1. Obtener Token con la firma exacta de Tuya Cloud v1.0 para GET
+      // Formula: ClientId + Timestamp + Method ("GET") + ContentHash ("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") + SignatureHeaders + Url
+      const emptyHash = crypto.createHash('sha256').update('').digest('hex');
+      const tokenUri = '/v1.0/token?grant_type=1';
+      const signStringToken = ['GET', emptyHash, '', tokenUri].join('\n');
+      const signTokenPayload = TUYA_CLIENT_ID + t + signStringToken;
+      
       const signForToken = crypto
         .createHmac('sha256', TUYA_SECRET_KEY)
-        .update(signStr)
+        .update(signTokenPayload)
         .digest('hex')
         .toUpperCase();
 
-      const tokenUrl = `${TUYA_BASE_URL}/v1.0/token?grant_type=1`;
+      const tokenUrl = `${TUYA_BASE_URL}${tokenUri}`;
       const tokenResponse = await axios.get(tokenUrl, {
         headers: {
           client_id: TUYA_CLIENT_ID,
           sign: signForToken,
-          t: timestamp,
+          t: t,
           sign_method: 'HMAC-SHA256'
         }
       });
@@ -63,31 +66,34 @@ export async function ejecutarAlarmaVecinal(telefono, comando) {
           ]
         };
 
-        const actionUrl = `/v1.0/devices/${deviceId}/commands`;
-        const tNew = Date.now().toString();
-
-        // Firma correcta para peticiones POST en Tuya Cloud v1.0:
-        // HTTPMethod + "\n" + contentHash + "\n" + headers + "\n" + url
-        const contentHash = crypto.createHash('sha256').update(JSON.stringify(commandPayload)).digest('hex');
-        const stringToSign = ['POST', contentHash, '', actionUrl].join('\n');
+        const tAction = Date.now().toString();
+        const actionUri = `/v1.0/devices/${deviceId}/commands`;
+        const bodyString = JSON.stringify(commandPayload);
+        const contentHash = crypto.createHash('sha256').update(bodyString).digest('hex');
         
-        // Para la acción POST con token, la cadena es: client_id + accessToken + timestamp + stringToSign
-        const strForAction = TUYA_CLIENT_ID + accessToken + tNew + stringToSign;
-        const signForAction = crypto.createHmac('sha256', TUYA_SECRET_KEY).update(strForAction).digest('hex').toUpperCase();
+        // Formula para POST con Token: ClientId + AccessToken + Timestamp + Method ("POST") + ContentHash + SignatureHeaders + Url
+        const signStringAction = ['POST', contentHash, '', actionUri].join('\n');
+        const signActionPayload = TUYA_CLIENT_ID + accessToken + tAction + signStringAction;
+        
+        const signForAction = crypto
+          .createHmac('sha256', TUYA_SECRET_KEY)
+          .update(signActionPayload)
+          .digest('hex')
+          .toUpperCase();
 
-        const tuyaRes = await axios.post(`${TUYA_BASE_URL}${actionUrl}`, commandPayload, {
+        const tuyaRes = await axios.post(`${TUYA_BASE_URL}${actionUri}`, commandPayload, {
           headers: {
             client_id: TUYA_CLIENT_ID,
             access_token: accessToken,
             sign: signForAction,
-            t: tNew,
+            t: tAction,
             sign_method: 'HMAC-SHA256',
             'Content-Type': 'application/json'
           }
         });
 
         if (tuyaRes.data && tuyaRes.data.success) {
-          console.log(`✅ ¡Dispositivo Tuya [${deviceId}] disparado con éxito!`);
+          console.log(`✅ ¡Dispositivo Tuya [${deviceId}] disparado con éxito en Europa!`);
         } else {
           console.warn("⚠️ Tuya API respondió con error en comandos:", tuyaRes.data);
         }
