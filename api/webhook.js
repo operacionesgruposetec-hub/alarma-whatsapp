@@ -6,14 +6,6 @@ export default async function handler(req, res) {
   }
 
   try {
-    const body = req.bodyimport { ejecutarAlarmaVecinal } from '../services/tuyaService.js';
-
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Método no permitido' });
-  }
-
-  try {
     const body = req.body;
 
     // 1. Identificar el chat donde se responderá (el grupo)
@@ -23,8 +15,7 @@ export default async function handler(req, res) {
     // 2. Extraer el identificador del remitente de forma limpia y directa del payload de Evolution API
     const rawParticipant = body?.data?.key?.participant || body?.data?.participant || body?.data?.sender || remoteJid;
 
-    // Limpieza estándar: eliminamos sufijos de WhatsApp pero dejamos el identificador completo 
-    // (sea número o lid) para que el Google Sheet / Apps Script lo busque y lo resuelva.
+    // Limpieza estándar: eliminamos sufijos de WhatsApp pero dejamos el identificador limpio
     const telefonoRemitente = rawParticipant.replace('@s.whatsapp.net', '').replace('@lid', '').replace(/[^0-9]/g, '');
 
     console.log(`📱 Chat: ${remoteJid} | Identificador enviado a Google Sheets: ${telefonoRemitente}`);
@@ -60,131 +51,6 @@ export default async function handler(req, res) {
       // ==========================================
       // LÓGICA DE WHATSAPP (TEXTO Y FOTO)
       // ==========================================
-      const optionsTime = { 
-        timeZone: 'America/Costa_Rica', 
-        year: 'numeric', 
-        month: '2-digit', 
-        day: '2-digit', 
-        hour: '2-digit', 
-        minute: '2-digit', 
-        second: '2-digit', 
-        hour12: true 
-      };
-      const fechaHoraCR = new Intl.DateTimeFormat('es-CR', optionsTime).format(new Date());
-
-      const nombreResidente = datosResidente ? datosResidente.nombre : senderPn;
-      const domicilioResidente = datosResidente ? datosResidente.domicilio : 'Residencia Registrada';
-
-      const respuestaTexto = `👤 SR/SRA: ${nombreResidente}\n` +
-        `🏠 DOMICILIO: ${domicilioResidente}\n` +
-        `📅 FECHA Y HORA: ${fechaHoraCR}\n\n` +
-        `⚠️ ATENCION VECINOS (Comando: ${cleanText}) ⚠️`;
-
-      const evolutionUrl = process.env.EVOLUTION_API_URL;
-      const instanceName = process.env.EVOLUTION_INSTANCE_NAME;
-      const headers = {
-        'Content-Type': 'application/json',
-        'apikey': process.env.EVOLUTION_API_KEY
-      };
-
-      await fetch(`${evolutionUrl}/message/sendText/${instanceName}`, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify({
-          number: remoteJid,
-          text: respuestaTexto
-        })
-      });
-
-      if (datosResidente && datosResidente.foto && datosResidente.foto.trim() !== "") {
-        let directImageUrl = datosResidente.foto.trim();
-
-        const driveMatch = directImageUrl.match(/\/d\/([a-zA-Z0-9_-]+)/) || directImageUrl.match(/id=([a-zA-Z0-9_-]+)/);
-        if (driveMatch && driveMatch[1]) {
-          const driveFileId = driveMatch[1];
-          directImageUrl = `https://lh3.googleusercontent.com/d/${driveFileId}`;
-        }
-
-        try {
-          await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
-            method: 'POST',
-            headers: headers,
-            body: JSON.stringify({
-              number: remoteJid,
-              mediaMessage: {
-                mediatype: "image",
-                media: directImageUrl,
-                caption: `🔴 FOTO DE LA CASA - ALARMA VECINAL (${cleanText}) 🔴`
-              }
-            })
-          });
-        } catch (mediaErr) {
-          console.error("❌ Error enviando foto a Evolution API:", mediaErr.message);
-        }
-      }
-    }
-
-    return res.status(200).json({ success: true, status: 'Webhook procesado' });
-
-  } catch (error) {
-    console.error('Error general en webhook.js:', error);
-    return res.status(500).json({ error: error.message });
-  }
-}
-
-    // 1. Identificar el chat donde se responderá (el grupo)
-    const remoteJid = body?.data?.key?.remoteJid || body?.data?.sender || '';
-    const senderPn = body?.data?.pushName || 'Vecino';
-    
-    let rawParticipant = body?.data?.key?.participant || body?.data?.participant || body?.data?.sender || remoteJid;
-
-    // Limpieza de extensión
-    let telefonoRemitente = rawParticipant.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
-
-    // =========================================================================
-    // TRADUCCIÓN DIRECTA DEL LID: 
-    // Si Evolution API manda el LID interno de WhatsApp, lo mapeamos a tu número real 
-    // con el que estás registrado en la hoja de Google Sheets.
-    // (Puedes cambiar '103693412229282' por tu número de teléfono real del chip).
-    // =========================================================================
-    const MAPEO_LIDS_A_TELEFONOS = {
-      '103693412229282': '50688888888' // <-- REEMPLAZA '50688888888' CON TU NÚMERO REAL EXACTO DE LA HOJA
-    };
-
-    if (telefonoRemitente.length > 12 || rawParticipant.includes('lid') || MAPEO_LIDS_A_TELEFONOS[telefonoRemitente]) {
-      if (MAPEO_LIDS_A_TELEFONOS[telefonoRemitente]) {
-        telefonoRemitente = MAPEO_LIDS_A_TELEFONOS[telefonoRemitente];
-        console.log(`🔄 LID traducido exitosamente a número real: ${telefonoRemitente}`);
-      }
-    }
-
-    console.log(`📱 Chat: ${remoteJid} | Teléfono final para cotejar con Google Sheets: ${telefonoRemitente}`);
-
-    const messageText = body?.data?.message?.conversation || 
-                        body?.data?.message?.extendedTextMessage?.text || '';
-
-    const cleanText = messageText.trim().toUpperCase();
-    const comandosValidos = ['M', 'S', 'I', 'P'];
-
-    let datosResidente = null;
-
-    if (comandosValidos.includes(cleanText) && telefonoRemitente !== '') {
-      console.log(`🚨 Comando de alarma [${cleanText}] detectado. Cotejando número real: ${telefonoRemitente}`);
-
-      try {
-        const resultadoTuya = await ejecutarAlarmaVecinal(telefonoRemitente, cleanText);
-        if (resultadoTuya.success) {
-          console.log(`✅ Tuya Cloud ejecutado con éxito: ${resultadoTuya.message}`);
-          if (resultadoTuya.datosResidente) {
-            datosResidente = resultadoTuya.datosResidente;
-          }
-        } else {
-          console.warn(`⚠️ Advertencia de Tuya Service: ${resultadoTuya.error || resultadoTuya.message}`);
-        }
-      } catch (tuyaErr) {
-        console.error("❌ Error crítico ejecutando Tuya Service:", tuyaErr.message);
-      }
-
       const optionsTime = { 
         timeZone: 'America/Costa_Rica', 
         year: 'numeric', 
