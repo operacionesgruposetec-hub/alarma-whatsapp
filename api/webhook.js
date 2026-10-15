@@ -8,22 +8,25 @@ export default async function handler(req, res) {
   try {
     const body = req.body || {};
     
-    // 1. Identificar el chat donde se responderá (si es grupo, responde al grupo; si es privado, al chat)
+    // 1. Identificar el chat donde se responderá (el grupo)
     const remoteJid = body?.data?.key?.remoteJid || body?.data?.sender || '';
     const senderPn = body?.data?.pushName || 'Vecino';
     
-    // 2. Extracción robusta del emisor real (buscando en todas las rutas posibles de Evolution API para grupos y chats)
-    const rawParticipant = body?.data?.key?.participant || 
-                           body?.data?.participant || 
-                           body?.data?.author || 
-                           body?.data?.key?.remoteJid || '';
+    // 2. Extracción precisa para evitar el ID tipo 'lid'
+    // En Evolution API, el emisor real dentro de un grupo suele venir en key.participant 
+    // (ej: "506XXXXXXXX@s.whatsapp.net"). Si viene con '@lid', debemos buscar en otra propiedad o usar el sender.
+    let rawParticipant = body?.data?.key?.participant || body?.data?.participant || body?.data?.sender || '';
+    
+    // Si el participante contiene '@lid', intentamos buscar el número en otra parte o limpiar el formato
+    if (rawParticipant.includes('@lid') || rawParticipant.length > 15) {
+      // Si el sender o remoteJid del mensaje privado trae el número real, lo intentamos rescatar
+      rawParticipant = body?.data?.sender || body?.data?.key?.remoteJid || rawParticipant;
+    }
 
-    // Limpieza profunda del número de teléfono
-    let telefonoRemitente = rawParticipant.replace(/[^0-9]/g, '');
+    // Limpieza profunda del número de teléfono (nos aseguramos de extraer solo los dígitos del número real)
+    let telefonoRemitente = rawParticipant.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
 
-    // Opcional de seguridad: Si el número extraído del grupo incluye código de país o viene largo,
-    // puedes asegurar que tome los dígitos correctos para que coincida con tu Google Sheet.
-    console.log(`📱 Chat (remoteJid): ${remoteJid} | Emisor crudo: ${rawParticipant} | Teléfono limpio para búsqueda: ${telefonoRemitente}`);
+    console.log(`📱 Chat (remoteJid): ${remoteJid} | Participante analizado: ${rawParticipant} | Teléfono limpio resultante: ${telefonoRemitente}`);
 
     const messageText = body?.data?.message?.conversation || 
                         body?.data?.message?.extendedTextMessage?.text || '';
@@ -31,7 +34,6 @@ export default async function handler(req, res) {
     const cleanText = messageText.trim().toUpperCase();
     const comandosValidos = ['M', 'S', 'I', 'P'];
 
-    // Validamos si el mensaje es uno de los comandos de alarma
     if (comandosValidos.includes(cleanText)) {
       console.log(`🚨 Comando de alarma [${cleanText}] detectado de: ${telefonoRemitente}`);
 
@@ -67,7 +69,7 @@ export default async function handler(req, res) {
       const respuestaTexto = `👤 SR/SRA: ${nombreResidente}\n` +
         `🏠 DOMICILIO: ${domicilioResidente}\n` +
         `📅 FECHA Y HORA: ${fechaHoraCR}\n\n` +
-        `⚠️ ATENCION VECINOS (Alerta: ${cleanText}) ⚠️`;
+        `⚠️ ATENCION VECINOS (Comando: ${cleanText}) ⚠️`;
 
       const evolutionUrl = process.env.EVOLUTION_API_URL;
       const instanceName = process.env.EVOLUTION_INSTANCE;
@@ -76,7 +78,7 @@ export default async function handler(req, res) {
         'apikey': process.env.EVOLUTION_API_KEY
       };
 
-      // 1. Enviar mensaje de texto (se responde al chat/grupo donde se emitió la alerta)
+      // Enviar mensaje de texto al grupo
       await fetch(`${evolutionUrl}/message/sendText/${instanceName}`, {
         method: 'POST',
         headers: headers,
@@ -86,7 +88,7 @@ export default async function handler(req, res) {
         })
       });
 
-      // 2. Enviar foto desde la hoja si está disponible
+      // Enviar foto si el residente tiene una registrada
       if (datosResidente?.foto && datosResidente.foto.trim() !== "") {
         let directImageUrl = datosResidente.foto.trim();
 
@@ -95,8 +97,6 @@ export default async function handler(req, res) {
           const driveFileId = driveMatch[1];
           directImageUrl = `https://lh3.googleusercontent.com/d/${driveFileId}`;
         }
-
-        console.log(`🖼️ Intentando enviar foto a Evolution API: ${directImageUrl}`);
 
         try {
           await fetch(`${evolutionUrl}/message/sendMedia/${instanceName}`, {
