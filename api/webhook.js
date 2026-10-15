@@ -12,21 +12,28 @@ export default async function handler(req, res) {
     const remoteJid = body?.data?.key?.remoteJid || body?.data?.sender || '';
     const senderPn = body?.data?.pushName || 'Vecino';
     
-    // 2. Extracción precisa para evitar el ID tipo 'lid'
-    // En Evolution API, el emisor real dentro de un grupo suele venir en key.participant 
-    // (ej: "506XXXXXXXX@s.whatsapp.net"). Si viene con '@lid', debemos buscar en otra propiedad o usar el sender.
-    let rawParticipant = body?.data?.key?.participant || body?.data?.participant || body?.data?.sender || '';
+    // 2. Extracción correcta: Si el participant o sender trae '@lid', 
+    // ignoramos ese identificador interno y buscamos el número real de teléfono.
+    let rawParticipant = body?.data?.key?.participant || body?.data?.participant || body?.data?.sender || remoteJid;
     
-    // Si el participante contiene '@lid', intentamos buscar el número en otra parte o limpiar el formato
-    if (rawParticipant.includes('@lid') || rawParticipant.length > 15) {
-      // Si el sender o remoteJid del mensaje privado trae el número real, lo intentamos rescatar
+    if (rawParticipant.includes('@lid') || rawParticipant.includes('g.us')) {
+      // Si estamos en un grupo y viene el LID, el número real a veces viene en el author o debemos parsearlo.
+      // Si Evolution API te pasa el número en otro campo, lo apuntamos aquí:
       rawParticipant = body?.data?.sender || body?.data?.key?.remoteJid || rawParticipant;
     }
 
-    // Limpieza profunda del número de teléfono (nos aseguramos de extraer solo los dígitos del número real)
+    // Limpieza profunda para quedarnos únicamente con los dígitos del número de teléfono real
     let telefonoRemitente = rawParticipant.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
 
-    console.log(`📱 Chat (remoteJid): ${remoteJid} | Participante analizado: ${rawParticipant} | Teléfono limpio resultante: ${telefonoRemitente}`);
+    // Si por alguna razón sigue tomando un número muy corto o el LID, 
+    // asegurémonos de extraer el número de teléfono limpio omitiendo el identificador de grupo (@g.us) o lid.
+    if (telefonoRemitente.length > 15 || rawParticipant.includes('@lid')) {
+      // Forzamos la limpieza extrayendo los dígitos limpios si están disponibles en el payload
+      const fallbackNumber = body?.data?.key?.remoteJid || '';
+      telefonoRemitente = fallbackNumber.replace(/[^0-9]/g, '');
+    }
+
+    console.log(`📱 Chat (remoteJid): ${remoteJid} | Participante analizado: ${rawParticipant} | Teléfono real para búsqueda: ${telefonoRemitente}`);
 
     const messageText = body?.data?.message?.conversation || 
                         body?.data?.message?.extendedTextMessage?.text || '';
