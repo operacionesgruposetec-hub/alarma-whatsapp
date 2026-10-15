@@ -30,18 +30,17 @@ export default async function handler(req, res) {
 
       console.log(`🎯 Mensaje recibido en grupo. Remitente bruto: [${rawParticipant}] -> Comando: [${cleanText}]`);
 
-      // EXTRACCIÓN 100% LIMPIA Y GENÉRICA (Sin parches, sin números quemados)
-      // Extrae la cadena antes del '@' (puede ser un número o un LID)
-      const remitenteLimpio = rawParticipant.split('@')[0].split(':')[0].trim();
+      // Extraemos el identificador limpio (sea el número o el LID)
+      let identificadorBuscado = rawParticipant.split('@')[0].split(':')[0].trim();
 
-      console.log(`📊 Consultando Google Sheets con el identificador del remitente: [${remitenteLimpio}]`);
+      console.log(`📊 Consultando Google Sheets con el identificador: [${identificadorBuscado}]`);
 
       const sheetApiUrl = process.env.GOOGLE_SHEET_API_URL;
       let datosResidente = null;
 
       if (sheetApiUrl) {
         try {
-          const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(remitenteLimpio)}`;
+          const urlConsulta = `${sheetApiUrl}?telefono=${encodeURIComponent(identificadorBuscado)}`;
           console.log(`🌐 URL de consulta generada: ${urlConsulta}`);
           
           const response = await fetch(urlConsulta, { 
@@ -63,9 +62,9 @@ export default async function handler(req, res) {
               longitud: parseFloat(fuenteResidente.longitud || fuenteResidente.Longitud || 0),
               foto: fuenteResidente.foto || fuenteResidente.Foto || ''
             };
-            console.log(`✅ ¡ÉXITO! Residente encontrado en la base de datos: [${datosResidente.nombre}] - [${datosResidente.domicilio}]`);
+            console.log(`✅ ¡ÉXITO! Residente encontrado: [${datosResidente.nombre}] - [${datosResidente.domicilio}]`);
           } else {
-            console.log(`⚠️ La hoja respondió pero el identificador no está autorizado:`, rawText);
+            console.log(`⚠️ La hoja respondió pero el identificador no hizo match:`, rawText);
           }
         } catch (sheetError) {
           console.error(`❌ Error crítico consultando Google Sheet:`, sheetError.message);
@@ -73,7 +72,7 @@ export default async function handler(req, res) {
       }
 
       if (!datosResidente) {
-        console.log(`❌ Alerta detenida: El remitente [${remitenteLimpio}] no está registrado en la base de datos.`);
+        console.log(`❌ Alerta detenida: El identificador [${identificadorBuscado}] no está autorizado.`);
         return res.status(200).json({ status: 'Ignored: Not registered' });
       }
 
@@ -81,8 +80,8 @@ export default async function handler(req, res) {
       // DISPARAR HARDWARE TUYA CLOUD (SIRENA)
       // ==========================================
       try {
-        console.log(`🚨 Ejecutando Tuya Service para: [${remitenteLimpio}] con comando [${cleanText}]`);
-        const resultadoTuya = await ejecutarAlarmaVecinal(remitenteLimpio, cleanText);
+        console.log(`🚨 Ejecutando Tuya Service para: [${identificadorBuscado}] con comando [${cleanText}]`);
+        const resultadoTuya = await ejecutarAlarmaVecinal(identificadorBuscado, cleanText);
         if (resultadoTuya.success) {
           console.log(`✅ Tuya Cloud ejecutado con éxito: ${resultadoTuya.message}`);
         } else {
@@ -184,7 +183,7 @@ export default async function handler(req, res) {
         });
       }
 
-      console.log('🎉 ¡SECUENCIA DE ALARMA COMPLETADA CON ÉXITO!');
+      console.log('🎉 ¡SECUENCIA DE ALARMA COMPLETADA!');
     }
 
     return res.status(200).json({ status: 'Webhook procesado correctamente' });
