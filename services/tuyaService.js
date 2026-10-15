@@ -23,7 +23,6 @@ export async function ejecutarAlarmaVecinal(telefono, comando) {
     const residente = data.residente;
     const deviceId = data.tuyaDeviceId || data.deviceId || data.tuya?.deviceId || FALLBACK_DEVICE_ID;
 
-    // Solo intentamos disparar si el comando es de emergencia válido ('M', 'P', 'S')
     const cmdClean = String(comando || '').toUpperCase().trim();
     if (['M', 'P', 'S'].includes(cmdClean)) {
       try {
@@ -53,12 +52,11 @@ export async function ejecutarAlarmaVecinal(telefono, comando) {
         if (tokenResponse.data && tokenResponse.data.success) {
           const accessToken = tokenResponse.data.result.access_token;
 
+          // Mandamos ambos códigos para cubrir cualquier variante del firmware de Tuya
           const commandPayload = {
             commands: [
-              {
-                code: "switch_1",
-                value: true
-              }
+              { code: "switch_1", value: true },
+              { code: "switch", value: true }
             ]
           };
 
@@ -88,7 +86,7 @@ export async function ejecutarAlarmaVecinal(telefono, comando) {
           });
 
           if (tuyaRes.data && tuyaRes.data.success) {
-            console.log(`✅ ¡Dispositivo Tuya [${deviceId}] disparado con éxito en Europa!`);
+            console.log(`✅ ¡Comando enviado al dispositivo Tuya [${deviceId}] con éxito!`);
           } else {
             console.warn("⚠️ Tuya API respondió con error en comandos:", tuyaRes.data);
           }
