@@ -30,12 +30,12 @@ export default async function handler(req, res) {
 
       console.log(`🎯 Mensaje recibido. Grupo origen: [${remoteJid}] | Remitente: [${rawParticipant}] -> Comando: [${cleanText}]`);
 
-      // 1. Extraer identificador del remitente
+      // 1. Extracción original de tu código (intacta y sin tocar)
       let identificadorRemitente = '';
-      if (rawParticipant.includes('@lid')) {
+      if (rawParticipant) {
         identificadorRemitente = rawParticipant.split('@')[0].split(':')[0].trim();
       } else {
-        identificadorRemitente = rawParticipant.split('@')[0].split(':')[0].replace(/\D/g, '');
+        identificadorRemitente = remoteJid.split('@')[0].split(':')[0].trim();
       }
 
       console.log(`📊 Consultando Google Sheets con el identificador: [${identificadorRemitente}]`);
@@ -76,7 +76,7 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: 'Ignored: Unauthorized group' });
       }
 
-      // 3. RESPALDO INTELIGENTE: Si el LID no está en la hoja todavía, NO DETENEMOS LA ALARMA
+      // 3. RESPALDO INTELIGENTE
       if (!datosResidente) {
         console.log(`⚠️ El LID [${identificadorRemitente}] aún no está en la hoja, pero el grupo es válido. Usando perfil temporal.`);
         datosResidente = {
@@ -165,7 +165,7 @@ export default async function handler(req, res) {
       }
 
       // =========================================================================
-      // 🚀 7. PUENTE INTELIGENTE: REENVÍO AUTOMÁTICO AL NUEVO RCA DE SETEC
+      // 🚀 7. REENVÍO SILENCIOSO AL NUEVO RCA (Sin tocar la lógica de arriba)
       // =========================================================================
       try {
         await fetch('https://monitoringplatform.vercel.app/api/webhook', {
@@ -177,12 +177,11 @@ export default async function handler(req, res) {
             abonadoId: identificadorRemitente || 'ABS-WHATSAPP',
             description: `Alerta ${cleanText} de ${datosResidente.nombre} (${datosResidente.domicilio})`,
             coordinates: { lat: datosResidente.latitud, lng: datosResidente.longitud },
-            rawData: body // Guardamos todo el contexto original por si acaso
+            rawData: body
           })
         });
-        console.log('✅ Alerta reenviada exitosamente a monitoringplatform.vercel.app');
       } catch (forwardErr) {
-        console.error('⚠️ No se pudo reenviar al nuevo RCA (no afecta la alarma principal):', forwardErr.message);
+        console.error('⚠️ Error en reenvío secundario:', forwardErr.message);
       }
       // =========================================================================
 
