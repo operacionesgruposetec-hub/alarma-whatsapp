@@ -82,9 +82,9 @@ export default async function handler(req, res) {
         datosResidente = {
           nombre: `Vecino (ID: ${identificadorRemitente.slice(-4)})`,
           domicilio: 'Residencia Autorizada en Grupo',
-          latitud: 9.9355,   // Puedes ajustar coordenadas por defecto de tu zona
+          latitud: 9.9355,   
           longitud: -84.0907,
-          foto: ''           // Sin foto temporalmente hasta que se cargue en Sheets
+          foto: ''           
         };
       }
 
@@ -163,6 +163,28 @@ export default async function handler(req, res) {
           })
         });
       }
+
+      // =========================================================================
+      // 🚀 7. PUENTE INTELIGENTE: REENVÍO AUTOMÁTICO AL NUEVO RCA DE SETEC
+      // =========================================================================
+      try {
+        await fetch('https://monitoringplatform.vercel.app/api/webhook', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source: 'whatsapp',
+            message: cleanText,
+            abonadoId: identificadorRemitente || 'ABS-WHATSAPP',
+            description: `Alerta ${cleanText} de ${datosResidente.nombre} (${datosResidente.domicilio})`,
+            coordinates: { lat: datosResidente.latitud, lng: datosResidente.longitud },
+            rawData: body // Guardamos todo el contexto original por si acaso
+          })
+        });
+        console.log('✅ Alerta reenviada exitosamente a monitoringplatform.vercel.app');
+      } catch (forwardErr) {
+        console.error('⚠️ No se pudo reenviar al nuevo RCA (no afecta la alarma principal):', forwardErr.message);
+      }
+      // =========================================================================
 
       console.log('🎉 ¡SECUENCIA DE ALARMA COMPLETADA CON ÉXITO!');
     }
